@@ -16,10 +16,10 @@ https://github.com/user-attachments/assets/6cce5e50-480e-4252-a808-84bb8addb533
 
 ---
 
-ptyZZZ is a small binary that owns one pty and renders its screen. It runs a
-shell, parses the bytes with [wezterm-term](https://github.com/wezterm/wezterm)
-into a cell grid, and renders that grid to HTML. Keystrokes and resizes go in as
-JSONL on stdin; the rendered screen comes out as JSONL on stdout.
+ptyZZZ runs a shell in a pty and renders its screen. It reads the shell's output,
+parses it with [wezterm-term](https://github.com/wezterm/wezterm) into a grid of
+character cells, and turns that grid into HTML. You send it keystrokes as JSONL on
+stdin; it sends the rendered screen back as JSONL on stdout.
 
 ```
 JSONL commands ──> ptyZZZ ──> JSONL screen frames
@@ -54,9 +54,11 @@ Screen out:
 ```
 
 Output is coalesced over a 16ms window, so a burst like `cat big.txt` becomes one
-frame rather than one per chunk. ptyZZZ knows nothing about HTTP or cross.stream;
-it is a vanilla filter you can test in a pipe, which keeps the glue that turns its
-lines into frames in one place.
+frame instead of one per chunk.
+
+ptyZZZ knows nothing about HTTP or cross.stream. It is a plain stdin/stdout
+program. You can drive it from a shell pipe, and only one small adapter has to
+know how to turn its output into stream frames.
 
 ## Why on a stream
 
@@ -93,9 +95,10 @@ The adapter is the only cross.stream-aware code in the project:
 }
 ```
 
-The `.send` frames flow into ptyZZZ's stdin; its JSONL stdout is fanned out into
-typed `.append`s. The closure emits nothing of its own (`| ignore`), so it routes
-by `t` rather than letting the default channel dump everything onto one topic.
+`.send` frames become ptyZZZ's stdin. Each line ptyZZZ prints is matched on its
+`t` field and appended to its own topic. The closure returns nothing
+(`| ignore`), so cross.stream doesn't also copy the raw output onto a default
+`.recv` topic.
 
 The web tier is then a reader. The page opens one `/sse`, follows the
 `pty.screen` topic, and morphs each frame into `#grid`. A keystroke POSTs to
@@ -158,32 +161,35 @@ service that wraps a long-running CLI.
 
 ## What goes on the log
 
-A screen can be stored as the full grid every frame, as pure diffs, or as
-keyframes with diffs between. Full-state bloats the log on every keystroke. Pure
-diffs can't survive a cold replay, since wezterm's stable row ids and sequence
-numbers live in process, not on the log, so a new subscriber has nothing to apply
-them against. Keyframes with diffs between is the fit, and the shape
-cross.stream's own examples settle on: a snapshot frame (`ttl last:1`) plus deltas
-(`ttl time:Ns`, enough to bridge to the next snapshot).
+A screen can be stored three ways: the full grid every frame, only the diffs, or
+keyframes with diffs between them.
 
-The 16ms window caps the rate at roughly 62 frames per second per terminal
-regardless of how fast the shell writes. The worst case for diffs, a full repaint
-where every visible row changes (htop, a vim redraw), is also where a single
-keyframe is smaller than a stack of row deltas. So the writer can choose per
-frame: heavy churn ships a keyframe and resets the basis; quiet typing ships a few
-small rows.
+The full grid every frame bloats the log on every keystroke. Pure diffs can't
+survive a cold replay: a diff is relative to wezterm's in-memory row ids and
+sequence numbers, which never reach the log, so a fresh subscriber has nothing to
+apply them to. Keyframes-plus-diffs is the fit, and the shape cross.stream's own
+examples settle on: a snapshot frame (`ttl last:1`) plus deltas (`ttl time:Ns`)
+that bridge to the next snapshot.
+
+The 16ms window caps output at about 62 frames per second per terminal, however
+fast the shell writes. The worst case for diffs is a full repaint, where every
+visible row changes at once (htop, a vim redraw) -- and that is exactly where a
+single keyframe is smaller than a stack of per-row diffs. So the writer can pick
+per frame: a heavy repaint ships a keyframe; quiet typing ships a few changed
+rows.
 
 ptyZZZ v0 ships keyframes only. The diff path is the next step; the wire already
 has room for it (`t` gains `diff`).
 
 ## HTML, not JSON
 
-The frame body is rendered HTML, not a cell model. With one writer and many
-readers, the render should happen once, at the writer, and each subscriber just
-forwards bytes. Storing cells instead means every `/sse` re-runs the cell-to-HTML
-pass in Nushell, once per connection. JSON is smaller on disk, but Brotli closes
-most of that gap on the wire, and the cost is a per-connection render tax on the
-path you set out to make cheap.
+The frame body is rendered HTML, not a structured list of cells. There is one
+writer and many readers, so the render should happen once, at the writer, and
+each reader just forwards the bytes. Store cells instead and every `/sse`
+connection has to rebuild the HTML itself, in Nushell, once per connection. JSON
+is smaller on disk, but Brotli closes most of that gap on the wire -- and you'd
+pay the render cost again on every connection, the exact path you wanted to keep
+cheap.
 
 ## Key by the session, not the clip
 
@@ -204,9 +210,9 @@ service on boot and serves the one-page client.
 
 Needs [http-nu](https://github.com/cablehead/http-nu) (`--store` for the log,
 `--services` for the service, `--datastar` for the SSE helpers) and a `bash` on
-PATH. The pty render is lifted from
-[stacks2099](https://github.com/cablehead/stacks2099); ptyZZZ is where it learns
-to live on a stream.
+PATH. The terminal-rendering code is copied from
+[stacks2099](https://github.com/cablehead/stacks2099), packaged here as a
+standalone program that can run on a stream.
 
 ## Driving it over HTTP
 
