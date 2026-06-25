@@ -38,7 +38,7 @@ this is about.
 
 ## The protocol
 
-Two streams, both newline-delimited JSON. Commands in:
+Both directions are newline-delimited JSON, one object per line. Commands in:
 
 ```
 {"t":"input","b":"ls\n"}              raw bytes for the pty
@@ -194,8 +194,8 @@ cheap.
 
 Frames are keyed by the pty's session, so a closed pty's screen stays replayable
 on the log, and a respawn (new session, same pane) is a swap the web tier makes,
-not something the producer tracks. ptyZZZ stays a function of one pty's bytes; the
-durable plumbing lives a layer up.
+not something the producer tracks. ptyZZZ only ever deals with one pty's bytes.
+Tracking sessions and respawning them is the web tier's job, above it.
 
 ## Run it
 
@@ -242,4 +242,5 @@ curl -s 127.0.0.1:5111/snap | sed 's/<[^>]*>/ /g'
 curl -sN 127.0.0.1:5111/sse
 ```
 
-Same path the page uses; the page is a keyboard and a `#grid` bound to it.
+The browser page uses this same path: it sends keystrokes to `/input` and morphs
+the screen frames into `#grid`.
