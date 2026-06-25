@@ -107,41 +107,41 @@ not in the browser.
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Browser as Browser (DOM + Datastar)
-    participant HTTP as http-nu (/sse, /input)
-    participant XS as cross.stream log
-    participant Svc as service closure (nu)
-    participant Pty as ptyZZZ (pty + wezterm grid)
-    participant Sh as bash (child)
+    participant Browser
+    participant HTTP as http-nu
+    participant XS as cross.stream
+    participant Svc as service
+    participant Pty as ptyZZZ
+    participant Sh as bash
 
-    Note over Svc,Sh: service spawns ptyZZZ once;<br/>wezterm-term owns the grid
+    Note over Svc,Sh: service spawns ptyZZZ once, wezterm owns the grid
 
     rect rgb(235, 245, 255)
-        Note over Browser,HTTP: --- client attaches ---
-        Browser->>HTTP: GET /sse  (data-init)
+        Note over Browser,HTTP: client attaches
+        Browser->>HTTP: GET /sse
         HTTP->>XS: follow topic pty.screen
-        XS-->>HTTP: replay last:1 keyframe
-        HTTP-->>Browser: Datastar morphs #grid <- SSE patch
+        XS-->>HTTP: replay last keyframe
+        HTTP-->>Browser: morph #grid
     end
 
     rect rgb(245, 255, 235)
-        Note over Browser,Sh: --- keystroke ---
-        Browser->>HTTP: POST /input  body=<bytes>
-        HTTP->>XS: append pty.send  {t:input,b:..}
-        XS->>Svc: frame -> closure stdin
-        Svc->>Pty: JSONL line -> ptyZZZ stdin
-        Pty->>Sh: bytes via pty.master
+        Note over Browser,Sh: keystroke
+        Browser->>HTTP: POST /input
+        HTTP->>XS: append pty.send
+        XS->>Svc: frame to closure stdin
+        Svc->>Pty: JSONL line to ptyZZZ stdin
+        Pty->>Sh: bytes via pty master
         HTTP-->>Browser: 204
     end
 
     rect rgb(255, 245, 235)
-        Note over Sh,Browser: --- output ---
-        Sh->>Pty: bytes via pty.master
-        Pty->>Pty: wezterm grid mutates, 16ms coalesce
-        Pty->>Svc: {t:screen, html:..} on stdout
-        Svc->>XS: append pty.screen --ttl last:1
+        Note over Sh,Browser: output
+        Sh->>Pty: bytes via pty master
+        Pty->>Pty: grid mutates, 16ms coalesce
+        Pty->>Svc: screen frame on stdout
+        Svc->>XS: append pty.screen
         XS-->>HTTP: follow yields frame
-        HTTP-->>Browser: Datastar morphs #grid <- SSE patch
+        HTTP-->>Browser: morph #grid
     end
 ```
 
