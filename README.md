@@ -1,5 +1,7 @@
 # ptyZZZ
 
+https://github.com/user-attachments/assets/6cce5e50-480e-4252-a808-84bb8addb533
+
 [stacks2099](https://github.com/cablehead/stacks2099) puts a live terminal in
 the browser without a terminal emulator in the browser. The pty runs on the
 server, [wezterm-term](https://github.com/wezterm/wezterm) parses its bytes into
