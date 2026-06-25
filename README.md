@@ -108,6 +108,7 @@ not in the browser.
 sequenceDiagram
     autonumber
     participant Browser
+    participant DS as Datastar
     participant HTTP as http-nu
     participant XS as cross.stream
     participant Svc as service
@@ -117,13 +118,15 @@ sequenceDiagram
     Note over Svc,Sh: service spawns ptyZZZ once, wezterm owns the grid
 
     Note over Browser,HTTP: client attaches
-    Browser->>HTTP: GET /sse
+    Browser->>DS: data-init @get /sse
+    DS->>HTTP: GET /sse
     HTTP->>XS: follow topic pty.screen
     XS-->>HTTP: replay last keyframe
-    HTTP-->>Browser: morph #grid
+    HTTP-->>DS: datastar-patch-elements
+    DS->>Browser: morph #grid
 
     Note over Browser,Sh: keystroke
-    Browser->>HTTP: POST /input
+    Browser->>HTTP: POST /input, plain fetch
     HTTP->>XS: append pty.send
     XS->>Svc: frame to closure stdin
     Svc->>Pty: JSONL line to ptyZZZ stdin
@@ -136,7 +139,8 @@ sequenceDiagram
     Pty->>Svc: screen frame on stdout
     Svc->>XS: append pty.screen
     XS-->>HTTP: follow yields frame
-    HTTP-->>Browser: morph #grid
+    HTTP-->>DS: datastar-patch-elements
+    DS->>Browser: morph #grid
 ```
 
 ## The pipe that deadlocks
