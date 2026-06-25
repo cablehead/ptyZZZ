@@ -116,33 +116,27 @@ sequenceDiagram
 
     Note over Svc,Sh: service spawns ptyZZZ once, wezterm owns the grid
 
-    rect rgb(235, 245, 255)
-        Note over Browser,HTTP: client attaches
-        Browser->>HTTP: GET /sse
-        HTTP->>XS: follow topic pty.screen
-        XS-->>HTTP: replay last keyframe
-        HTTP-->>Browser: morph #grid
-    end
+    Note over Browser,HTTP: client attaches
+    Browser->>HTTP: GET /sse
+    HTTP->>XS: follow topic pty.screen
+    XS-->>HTTP: replay last keyframe
+    HTTP-->>Browser: morph #grid
 
-    rect rgb(245, 255, 235)
-        Note over Browser,Sh: keystroke
-        Browser->>HTTP: POST /input
-        HTTP->>XS: append pty.send
-        XS->>Svc: frame to closure stdin
-        Svc->>Pty: JSONL line to ptyZZZ stdin
-        Pty->>Sh: bytes via pty master
-        HTTP-->>Browser: 204
-    end
+    Note over Browser,Sh: keystroke
+    Browser->>HTTP: POST /input
+    HTTP->>XS: append pty.send
+    XS->>Svc: frame to closure stdin
+    Svc->>Pty: JSONL line to ptyZZZ stdin
+    Pty->>Sh: bytes via pty master
+    HTTP-->>Browser: 204
 
-    rect rgb(255, 245, 235)
-        Note over Sh,Browser: output
-        Sh->>Pty: bytes via pty master
-        Pty->>Pty: grid mutates, 16ms coalesce
-        Pty->>Svc: screen frame on stdout
-        Svc->>XS: append pty.screen
-        XS-->>HTTP: follow yields frame
-        HTTP-->>Browser: morph #grid
-    end
+    Note over Sh,Browser: output
+    Sh->>Pty: bytes via pty master
+    Pty->>Pty: grid mutates, 16ms coalesce
+    Pty->>Svc: screen frame on stdout
+    Svc->>XS: append pty.screen
+    XS-->>HTTP: follow yields frame
+    HTTP-->>Browser: morph #grid
 ```
 
 ## The pipe that deadlocks
