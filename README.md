@@ -199,3 +199,37 @@ Needs [http-nu](https://github.com/cablehead/http-nu) (`--store` for the log,
 PATH. The pty render is lifted from
 [stacks2099](https://github.com/cablehead/stacks2099); ptyZZZ is where it learns
 to live on a stream.
+
+## Driving it over HTTP
+
+The browser is just one client. Because input is a POST that appends a
+`pty.send` frame, anything that can make an HTTP request can type into the
+terminal -- a script, a `curl`, another machine on the log. The body of
+`POST /input` is forwarded to the pty verbatim, so a command and the carriage
+return that submits it are two writes:
+
+```
+# type a command, then submit it with a carriage return
+curl -X POST 127.0.0.1:5111/input --data-binary 'cargo run --example mandelbrot'
+curl -X POST 127.0.0.1:5111/input --data-binary $'\r'
+```
+
+Send any bytes the same way -- control characters included. Ctrl-C is `\x03`,
+Tab is `\t`, Escape is `\x1b`:
+
+```
+curl -X POST 127.0.0.1:5111/input --data-binary $'\x03'   # interrupt
+```
+
+Read the current screen as one shot, or follow the live stream:
+
+```
+# latest frame, tags stripped to plain text
+curl -s 127.0.0.1:5111/snap | sed 's/<[^>]*>/ /g'
+
+# the SSE stream the browser uses: one datastar morph per frame
+curl -sN 127.0.0.1:5111/sse
+```
+
+This is the same path the page uses; the page is just a keyboard and a `#grid`
+bound to it.
