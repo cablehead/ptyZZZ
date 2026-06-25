@@ -21,4 +21,4 @@ are a later revision; the wire stays the same shape, just more `t` values.
 
 ## standalone probe (no xs)
 
-    printf '{"t":"input","b":"ls\\n"}\n' | ptyZZZ run -- bash
+    printf '{"t":"input","b":"ls\\n"}\n' | ptyZZZ run -- nu

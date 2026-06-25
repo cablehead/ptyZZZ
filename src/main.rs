@@ -39,7 +39,7 @@ enum Sub {
         /// initial rows
         #[arg(long, default_value_t = 24)]
         rows: u16,
-        /// command to run (default: $SHELL or bash). Everything after `--`.
+        /// command to run (default: $SHELL or nu). Everything after `--`.
         #[arg(trailing_var_arg = true)]
         cmd: Vec<String>,
     },
@@ -76,7 +76,7 @@ impl Write for SharedWriter {
 fn main() {
     let Sub::Run { cols, rows, cmd } = Args::parse().sub;
     let cmd = if cmd.is_empty() {
-        vec![std::env::var("SHELL").unwrap_or_else(|_| "bash".into())]
+        vec![std::env::var("SHELL").unwrap_or_else(|_| "nu".into())]
     } else {
         cmd
     };

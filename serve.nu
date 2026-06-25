@@ -19,7 +19,7 @@ const PTYZZZ = (path self | path dirname | path join "target" "debug" "ptyZZZ")
 if ($HTTP_NU.store? | default null) != null and ($HTTP_NU.services? | default false) {
   let closure = "{
   run: {||
-    ^PTYBIN run -- bash
+    ^PTYBIN run -- nu
     | lines | each {|l|
         let e = try { $l | from json } catch { null }
         if $e == null { return }

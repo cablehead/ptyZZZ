@@ -29,7 +29,7 @@ JSONL commands ──> ptyZZZ ──> JSONL screen frames
 It is a filter you can run in a pipe:
 
 ```
-printf '{"t":"input","b":"ls\n"}\n' | ptyZZZ run -- bash
+printf '{"t":"input","b":"ls\n"}\n' | ptyZZZ run -- nu
 ```
 
 Or wire it to [cross.stream](https://cross.stream), so its screen lands on a log
@@ -81,7 +81,7 @@ The adapter is the only cross.stream-aware code in the project:
 ```nushell
 {
   run: {||
-    ^ptyZZZ run -- bash
+    ^ptyZZZ run -- nu
     | lines | each {|l|
         let e = $l | from json
         match $e.t {
@@ -112,7 +112,7 @@ sequenceDiagram
     participant XS as cross.stream
     participant Svc as service
     participant Pty as ptyZZZ
-    participant Sh as bash
+    participant Sh as nu
 
     Note over Svc,Sh: service spawns ptyZZZ once, wezterm owns the grid
 
@@ -147,7 +147,7 @@ sequenceDiagram
 
 ## The pipe that deadlocks
 
-The first version wrote `$in | ^ptyZZZ run -- bash`, threading the service input
+The first version wrote `$in | ^ptyZZZ run -- nu`, threading the service input
 into ptyZZZ explicitly. It hung: the service went `active`, but no ptyZZZ process
 appeared.
 
@@ -208,7 +208,7 @@ Open http://127.0.0.1:5111 and type into the page. `serve.nu` registers the
 service on boot and serves the one-page client.
 
 Needs [http-nu](https://github.com/cablehead/http-nu) (`--store` for the log,
-`--services` for the service, `--datastar` for the SSE helpers) and a `bash` on
+`--services` for the service, `--datastar` for the SSE helpers) and a `nu` on
 PATH. The terminal-rendering code is copied from
 [stacks2099](https://github.com/cablehead/stacks2099), packaged here as a
 standalone program that can run on a stream.

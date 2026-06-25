@@ -33,10 +33,10 @@ The pty is wrapped as a cross.stream duplex service in `serve.nu`. The external
 command must be the HEAD of the closure pipeline:
 
 ```nushell
-run: {|| ^ptyZZZ run -- bash | lines | each { ... } }
+run: {|| ^ptyZZZ run -- nu | lines | each { ... } }
 ```
 
-Do NOT write `$in | ^ptyZZZ run -- bash`. `$in` collects its input before passing
+Do NOT write `$in | ^ptyZZZ run -- nu`. `$in` collects its input before passing
 it on, and a duplex service's input stream never ends, so `$in` blocks forever and
 the external command never spawns. A duplex service feeds its `<name>.send` frames
 straight to the first command's stdin, so the external belongs at the head with no
