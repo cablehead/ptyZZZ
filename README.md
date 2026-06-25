@@ -26,8 +26,7 @@ JSONL commands ──> ptyZZZ ──> JSONL screen frames
    (stdin)        pty + grid       (stdout)
 ```
 
-No TUI, no browser-side emulator, no daemon. It is a filter you can run in a
-pipe:
+It is a filter you can run in a pipe:
 
 ```
 printf '{"t":"input","b":"ls\n"}\n' | ptyZZZ run -- bash
