@@ -19,8 +19,6 @@ use wezterm_term::{
 };
 
 const SCROLLBACK_LINES: usize = 3000;
-/// Coalesce window: collapse an output burst into one frame.
-const COALESCE: Duration = Duration::from_millis(16);
 
 #[derive(Parser)]
 #[command(about = "own one pty, speak JSONL on stdio")]
@@ -39,6 +37,13 @@ enum Sub {
         /// initial rows
         #[arg(long, default_value_t = 24)]
         rows: u16,
+        /// element id to render the grid into (container + row ids)
+        #[arg(long, default_value = "grid")]
+        target: String,
+        /// coalesce window in ms; caps frame rate (~1000/ms). Higher = fewer,
+        /// coarser frames -- lighter on the client and the fan-out.
+        #[arg(long, default_value_t = 16)]
+        coalesce: u64,
         /// command to run (default: $SHELL or nu). Everything after `--`.
         #[arg(trailing_var_arg = true)]
         cmd: Vec<String>,
@@ -74,7 +79,8 @@ impl Write for SharedWriter {
 }
 
 fn main() {
-    let Sub::Run { cols, rows, cmd } = Args::parse().sub;
+    let Sub::Run { cols, rows, target, coalesce, cmd } = Args::parse().sub;
+    let coalesce = Duration::from_millis(coalesce);
     let cmd = if cmd.is_empty() {
         vec![std::env::var("SHELL").unwrap_or_else(|_| "nu".into())]
     } else {
@@ -198,20 +204,20 @@ fn main() {
         {
             let mut g = lock.lock().unwrap();
             while *g == last_gen && !done.load(Ordering::SeqCst) {
-                let (ng, _) = cv.wait_timeout(g, COALESCE).unwrap();
+                let (ng, _) = cv.wait_timeout(g, coalesce).unwrap();
                 g = ng;
             }
             last_gen = *g;
         }
         if !done.load(Ordering::SeqCst) {
-            std::thread::sleep(COALESCE);
+            std::thread::sleep(coalesce);
             let (lock, _) = &*dirty;
             last_gen = *lock.lock().unwrap();
         }
 
         let (seqno, cols, rows, html) = {
             let t = term.lock().unwrap();
-            let (c, r, h) = render_visible(&t, "grid");
+            let (c, r, h) = render_visible(&t, &target);
             (t.current_seqno(), c, r, h)
         };
         let line = serde_json::json!({"t":"screen","seqno":seqno,"cols":cols,"rows":rows,"html":html});
