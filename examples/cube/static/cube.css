@@ -1,0 +1,50 @@
+:root{--term-bg:#111;--term-fg:#ddd;
+  --c0:#000;--c1:#cd0000;--c2:#00cd00;--c3:#cdcd00;--c4:#1e90ff;--c5:#cd00cd;
+  --c6:#00cdcd;--c7:#e5e5e5;--c8:#4d4d4d;--c9:#ff5454;--c10:#54ff54;--c11:#ffff54;
+  --c12:#5454ff;--c13:#ff54ff;--c14:#54ffff;--c15:#fff;}
+html,body{height:100%;margin:0}
+body{background:#000;color:var(--term-fg);
+  font:12px/1.2 monospace;display:grid;place-items:center;overflow:hidden}
+
+/* --- 3D cube -------------------------------------------------------- */
+/* The cube keeps moving, but the Y spin dwells at 0deg (front = nu face) for
+   the first ~40% of each cycle, then whips through a full turn -- so the nu
+   shell sits square to the camera a good portion of the time while the other
+   faces still cycle past. A gentle X rock adds depth (top/bottom peek). */
+.scene{width:520px;height:520px;perspective:1600px}
+.tumble{position:relative;width:100%;height:100%;
+  transform-style:preserve-3d;animation:rock-x 9.2s ease-in-out infinite}
+.cube{position:relative;width:100%;height:100%;
+  transform-style:preserve-3d;animation:spin-y 11.9s ease-in-out infinite}
+@keyframes rock-x{0%,100%{transform:rotateX(-15deg)} 50%{transform:rotateX(15deg)}}
+@keyframes spin-y{0%,40%{transform:rotateY(0deg)} 100%{transform:rotateY(360deg)}}
+/* note: dwell 0-40% keeps the nu face forward; durations 9.2s X / 11.9s Y */
+
+/* Each face is a ptyZZZ grid. Half-size = 260px is the translateZ depth. */
+.face{position:absolute;top:0;left:0;width:520px;height:520px;
+  box-sizing:border-box;border:1px solid #333;font-size:11px;
+  background:color-mix(in srgb, var(--term-bg) 92%, transparent);
+  backface-visibility:hidden;overflow:hidden;padding:0}
+/* The grid fills the face via font-size, not a transform: scaling six live-
+   morphing subtrees inside the 3D cube forces a per-frame re-raster and janks
+   the spin. Font-size reflows the cells to fill at native rendering -- crisp
+   and cheap. font-size is set on .fit (never morphed) so it survives the
+   per-frame swap of #grid-n; the grid inherits it. */
+.fit{position:absolute;top:0;left:0}
+.fit>div{white-space:pre}
+
+.f-front {transform:rotateY(  0deg) translateZ(260px);border-color:#1e90ff}
+.f-right {transform:rotateY( 90deg) translateZ(260px);border-color:#00cd00}
+.f-back  {transform:rotateY(180deg) translateZ(260px);border-color:#cd00cd}
+.f-left  {transform:rotateY(-90deg) translateZ(260px);border-color:#cdcd00}
+.f-top   {transform:rotateX( 90deg) translateZ(260px);border-color:#00cdcd}
+.f-bottom{transform:rotateX(-90deg) translateZ(260px);border-color:#cd0000}
+
+/* ptyZZZ cell styling (mirrors serve.nu) */
+.row{min-height:1.2em}
+.wc{display:inline-block;width:calc(var(--w)*1ch)}
+.sb{font-weight:bold}.si{font-style:italic}.su{text-decoration:underline}
+.f1{color:var(--c1)}.f2{color:var(--c2)}.f3{color:var(--c3)}.f4{color:var(--c4)}
+.f5{color:var(--c5)}.f6{color:var(--c6)}.f7{color:var(--c7)}
+
+.hint{color:#666;font:12px monospace;position:fixed;bottom:8px;left:8px;margin:0}

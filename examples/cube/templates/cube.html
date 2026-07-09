@@ -1,0 +1,18 @@
+<!doctype html>
+<html><head><meta charset=utf-8>
+<script type=module src="{{ datastar }}"></script>
+<link rel=stylesheet href="/static/cube.css">
+</head>
+<body data-init="@get('/sse')">
+  <div id=scene class=scene>
+   <div class=tumble>
+    <div class=cube>
+      {% for f in faces %}
+      <div class="face {{ f.cls }}"><div class=fit><div id="grid-{{ f.i }}">{{ f.label }}</div></div></div>
+      {% endfor %}
+    </div>
+   </div>
+  </div>
+  <p class=hint>front face is a live nu shell -- type to send keys (it dwells facing you between spins)</p>
+  <script type=module src="/static/cube.js"></script>
+</body></html>
