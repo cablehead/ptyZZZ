@@ -54,11 +54,24 @@ for bin in [$PTYZZZ $PLAYSTYLE $AQUA] {
   }
 }
 
-# Register one pty service per face. Re-append on each boot hot-reloads the
-# running service (xs replaces it), so this is restart-safe. Each ptyZZZ renders
-# into grid-<n> and each screen frame is appended to pty.screen.<n> (ttl last:1,
-# so a fresh /sse replays the current frame of every face on connect). The term
-# face is duplex so its <name>.send topic feeds ptyZZZ's stdin.
+# Register a service idempotently: append its xs.service.<name>.create only if
+# the stored definition is missing or has changed. Two facts make this the right
+# shape. Create frames are kept `forever` (the runtime keeps the last known-good
+# create as its hot-replace fallback -- lifecycle invariant I3 -- and a pruning
+# ttl like last:/time: would delete it). And an already-confirmed service resumes
+# on every boot on its own (I2), so re-appending an identical create each boot is
+# pure cruft. So: forever + skip-if-unchanged, and no create accumulation across
+# restarts. (Pruning ttl is for app *data* streams instead -- see pty.screen.<n>
+# below, which uses last:1 so a fresh /sse replays only the current frame.)
+def register-service [topic: string, config: string] {
+  let last = (.last $topic)
+  let current = if ($last | is-empty) { null } else { .cas $last.hash }
+  if $current != $config { $config | .append $topic | ignore }
+}
+
+# One pty service per face. The term face is duplex, so its pty0.send topic feeds
+# that ptyZZZ's stdin; each face renders into grid-<n> and appends its screen
+# keyframe to pty.screen.<n> (last:1).
 if ($HTTP_NU.store? | default null) != null and ($HTTP_NU.services? | default false) {
   $FACES | enumerate | each {|it|
     let runcmd = if $it.item.kind == "term" { "nu" } else if $it.item.kind == "aqua" { $AQUA } else { $"PLAYBIN ($it.item.style) 1000000" }
@@ -77,15 +90,15 @@ if ($HTTP_NU.store? | default null) != null and ($HTTP_NU.services? | default fa
   }
   duplex: DUPLEX
 }"
-    $closure
+    let config = ($closure
       | str replace --all "PTYBIN" $PTYZZZ
       | str replace --all "RUNCMD" $runcmd
       | str replace --all "PLAYBIN" $PLAYSTYLE
       | str replace --all "DUPLEX" $duplex
       | str replace --all "COLS" ($cols | into string)
       | str replace --all "ROWS" ($rows | into string)
-      | str replace --all "IDX" ($it.index | into string)
-      | .append $"xs.service.pty($it.index).create" --ttl last:1 | ignore
+      | str replace --all "IDX" ($it.index | into string))
+    register-service $"xs.service.pty($it.index).create" $config
   }
 }
 

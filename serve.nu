@@ -14,8 +14,19 @@ use http-nu/router *
 
 const PTYZZZ = (path self | path dirname | path join "target" "debug" "ptyZZZ")
 
-# Register the pty service once (needs --store + --services). Re-append on each
-# boot replaces the running service (xs hot-reload), so this is restart-safe.
+# Register the pty service idempotently (needs --store + --services): append
+# xs.service.pty.create only if the stored definition is missing or changed.
+# Create frames are kept `forever` -- the runtime keeps the last known-good create
+# as its hot-replace fallback (lifecycle I3), and an already-confirmed service
+# resumes on every boot on its own (I2), so re-appending an identical create each
+# boot would just pile up cruft. (last:1 is for app data instead -- the pty.screen
+# and pty.exit output below.)
+def register-service [topic: string, config: string] {
+  let last = (.last $topic)
+  let current = if ($last | is-empty) { null } else { .cas $last.hash }
+  if $current != $config { $config | .append $topic | ignore }
+}
+
 if ($HTTP_NU.store? | default null) != null and ($HTTP_NU.services? | default false) {
   let closure = "{
   run: {||
@@ -32,7 +43,7 @@ if ($HTTP_NU.store? | default null) != null and ($HTTP_NU.services? | default fa
   }
   duplex: true
 }"
-  $closure | str replace "PTYBIN" $PTYZZZ | .append "xs.service.pty.create" --ttl last:1 | ignore
+  register-service "xs.service.pty.create" ($closure | str replace "PTYBIN" $PTYZZZ)
 }
 
 const PAGE = "<!doctype html>
