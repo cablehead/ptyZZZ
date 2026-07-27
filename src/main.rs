@@ -250,8 +250,12 @@ fn main() {
         };
         if let Some(v) = frame {
             let mut w = out.lock();
-            let _ = writeln!(w, "{v}");
-            let _ = w.flush();
+            // A dead stdout means no one is listening (the adapter that
+            // spawned us is gone): exit instead of rendering forever.
+            if writeln!(w, "{v}").and_then(|_| w.flush()).is_err() {
+                let _ = child.kill();
+                break;
+            }
         }
 
         if done.load(Ordering::SeqCst) {
