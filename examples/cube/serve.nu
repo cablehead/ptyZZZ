@@ -25,17 +25,33 @@ use http-nu/router *
 const HERE = (path self | path dirname)
 
 # --- config: binaries the faces run --------------------------------------
-# ptyZZZ is built in this repo. The animations come from sibling projects when
-# built; otherwise the bundled stubs/ scripts stand in, so the cube runs from
-# a bare checkout. Edit the real paths here if yours live elsewhere.
+# ptyZZZ is built in this repo. The animations are vendored in bin/ as
+# prebuilt binaries named <name>-<target triplet>; the one matching the
+# platform http-nu runs on is picked at load, and load fails loudly when this
+# platform's binaries are missing (see bin/README.md to build and add them).
 const PTYZZZ = ($HERE | path join ".." ".." "target" "release" "ptyZZZ" | path expand)
 
-def anim-bin [real: string, stub: string] {
-  let real = ($real | path expand)
-  if ($real | path exists) { $real } else { $stub }
+def triplet [] {
+  let u = (uname)
+  match [$u."kernel-name", $u.machine] {
+    ["Linux", "x86_64"] => "x86_64-unknown-linux-gnu"
+    ["Linux", "aarch64"] => "aarch64-unknown-linux-gnu"
+    ["Darwin", "x86_64"] => "x86_64-apple-darwin"
+    ["Darwin", "arm64"] => "aarch64-apple-darwin"
+    ["Windows_NT", "x86_64"] => "x86_64-pc-windows-msvc"
+    _ => (error make {msg: $"cube: unsupported platform ($u | get kernel-name)/($u.machine)"})
+  }
 }
-let PLAYSTYLE = (anim-bin "~/yazelix-screen/target/release/examples/play_style" ($HERE | path join "stubs" "play_style"))
-let AQUA = (anim-bin "~/asciiquarium-rs/target/release/asciiquarium" ($HERE | path join "stubs" "asciiquarium"))
+
+def anim-bin [name: string] {
+  let bin = ($HERE | path join "bin" $"($name)-(triplet)")
+  if not ($bin | path exists) {
+    error make {msg: $"cube: missing ($bin) -- build it for this platform, see bin/README.md"}
+  }
+  $bin
+}
+let PLAYSTYLE = (anim-bin "play_style")
+let AQUA = (anim-bin "asciiquarium")
 
 # Per face, one of:
 #   term  interactive nu shell (duplex service, takes keystrokes)

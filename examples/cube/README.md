@@ -13,20 +13,16 @@ fanned onto its own cross.stream topic, and morphed into the cube by one `/sse`.
     templates/cube.html  the page (minijinja, rendered by http-nu's .mj)
     static/cube.css      styles
     static/cube.js       fit-to-face + keystroke handling + tail-follow
-    stubs/               fallback animations when the sibling projects
-                         aren't built (bash, repaint-in-place)
+    bin/                 vendored animation binaries, one per target triplet
 
 ## Requirements
 
 - `ptyZZZ` built in this repo: `cargo build --release`
 - `http-nu` on PATH, with `--store`, `--services`, and `--datastar`.
-- Optional: two sibling projects for the real animations, at the paths
-  configured at the top of `serve.nu`:
-  - `yazelix-screen` -- the `play_style` example (boids, mandelbrot, ...)
-  - `asciiquarium-rs` -- the `asciiquarium` binary
-  When they aren't built, the bundled `stubs/` scripts stand in, so the cube
-  runs from a bare checkout. Edit the paths in `serve.nu` if yours live
-  elsewhere.
+- The animation binaries for your platform in `bin/`, named
+  `<name>-<target triplet>`. `serve.nu` picks the pair matching the platform
+  http-nu runs on and fails loudly at load if they are missing. See
+  `bin/README.md` for how to build and add a platform.
 
 ## Run
 
