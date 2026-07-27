@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Stand-in for yazelix-screen's play_style so the cube runs without building
+# the sibling project: diagonal color bands drifting across the face, repainted
+# in place (cursor home, no scrolling). Args match the real one: style [count].
+style="${1:-wave}"
+size=$(stty size 2>/dev/null) || size=''
+rows=${size% *} cols=${size#* }
+: "${rows:=39}" "${cols:=78}"
+printf '\e[?25l'
+trap 'printf "\e[?25h\e[0m"' EXIT
+seg='~~~~~~'
+t=0
+while :; do
+  printf '\e[H'
+  for ((y = 0; y < rows - 1; y++)); do
+    out=''
+    for ((x = 0; x < cols; x += 6)); do
+      n=$((cols - x < 6 ? cols - x : 6))
+      out+="\e[3$(((x / 6 + y + t) % 6 + 1))m${seg:0:n}"
+    done
+    printf '%b\e[0m\n' "$out"
+  done
+  printf '\e[0m %s t=%d' "$style" "$t"
+  t=$((t + 1))
+  sleep 0.12
+done

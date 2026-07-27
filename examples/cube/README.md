@@ -12,17 +12,21 @@ fanned onto its own cross.stream topic, and morphed into the cube by one `/sse`.
     serve.nu             glue: service wiring + routes (no markup)
     templates/cube.html  the page (minijinja, rendered by http-nu's .mj)
     static/cube.css      styles
-    static/cube.js       fit-to-face + keystroke handling
+    static/cube.js       fit-to-face + keystroke handling + tail-follow
+    stubs/               fallback animations when the sibling projects
+                         aren't built (bash, repaint-in-place)
 
 ## Requirements
 
 - `ptyZZZ` built in this repo: `cargo build --release`
-- Two sibling projects, built, at the paths configured at the top of `serve.nu`:
+- `http-nu` on PATH, with `--store`, `--services`, and `--datastar`.
+- Optional: two sibling projects for the real animations, at the paths
+  configured at the top of `serve.nu`:
   - `yazelix-screen` -- the `play_style` example (boids, mandelbrot, ...)
   - `asciiquarium-rs` -- the `asciiquarium` binary
-  Edit `PLAYSTYLE` / `AQUA` in `serve.nu` if yours live elsewhere. `serve.nu`
-  fails at load with a clear message if any binary is missing.
-- `http-nu` on PATH, with `--store`, `--services`, and `--datastar`.
+  When they aren't built, the bundled `stubs/` scripts stand in, so the cube
+  runs from a bare checkout. Edit the paths in `serve.nu` if yours live
+  elsewhere.
 
 ## Run
 

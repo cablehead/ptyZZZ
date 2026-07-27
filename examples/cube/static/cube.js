@@ -9,7 +9,9 @@ function fit(wrap){
   const key = g.dataset.cols + 'x' + g.dataset.rows;
   if(wrap.dataset.key === key) return;              // already fitted
   wrap.style.fontSize = '';                         // measure at inherited size
-  const nw = g.offsetWidth;
+  // scrollWidth, not offsetWidth: the scroll face pins the wrapper's width, so
+  // offsetWidth reports the container, not the grid's content
+  const nw = Math.max(g.scrollWidth, g.offsetWidth);
   if(!nw) return;
   const face = wrap.parentElement;
   const cur = parseFloat(getComputedStyle(g).fontSize);
@@ -20,6 +22,17 @@ const fits = [...document.querySelectorAll('.fit')];
 fits.forEach(w => new MutationObserver(() => fit(w))
   .observe(w, {childList:true, subtree:true, attributes:true}));
 addEventListener('resize', () => { fits.forEach(w => { delete w.dataset.key; fit(w); }); });
+
+// The scrollback face follows the tail like a terminal: pinned to the bottom
+// until the user scrolls back through history, resuming when they return.
+document.querySelectorAll('.fit.scroll').forEach(w => {
+  let follow = true;
+  w.addEventListener('scroll', () => {
+    follow = w.scrollTop + w.clientHeight >= w.scrollHeight - 48;
+  });
+  new MutationObserver(() => { if(follow) w.scrollTop = w.scrollHeight; })
+    .observe(w, {childList:true, subtree:true});
+});
 
 // Keystrokes -> the interactive (front) face. POST /input appends a pty0.send
 // frame, which the duplex service feeds to that ptyZZZ's stdin. Sends the real

@@ -25,11 +25,17 @@ use http-nu/router *
 const HERE = (path self | path dirname)
 
 # --- config: binaries the faces run --------------------------------------
-# ptyZZZ is built in this repo; the animations come from sibling projects.
-# Override the two external ones by editing these paths.
+# ptyZZZ is built in this repo. The animations come from sibling projects when
+# built; otherwise the bundled stubs/ scripts stand in, so the cube runs from
+# a bare checkout. Edit the real paths here if yours live elsewhere.
 const PTYZZZ = ($HERE | path join ".." ".." "target" "release" "ptyZZZ" | path expand)
-const PLAYSTYLE = ("~/yazelix-screen/target/release/examples/play_style" | path expand)
-const AQUA = ("~/asciiquarium-rs/target/release/asciiquarium" | path expand)
+
+def anim-bin [real: string, stub: string] {
+  let real = ($real | path expand)
+  if ($real | path exists) { $real } else { $stub }
+}
+let PLAYSTYLE = (anim-bin "~/yazelix-screen/target/release/examples/play_style" ($HERE | path join "stubs" "play_style"))
+let AQUA = (anim-bin "~/asciiquarium-rs/target/release/asciiquarium" ($HERE | path join "stubs" "asciiquarium"))
 
 # Per face, one of:
 #   term  interactive nu shell (duplex service, takes keystrokes)
@@ -70,21 +76,29 @@ def register-service [topic: string, config: string] {
 }
 
 # One pty service per face. The term face is duplex, so its pty0.send topic feeds
-# that ptyZZZ's stdin; each face renders into grid-<n> and appends its screen
-# keyframe to pty.screen.<n> (last:1).
+# that ptyZZZ's stdin; each face renders into grid-<n>. Keyframes land on
+# pty.screen.<n> (last:1, the join point); diffs on pty.diff.<n> (ephemeral).
+# The term face keeps full scrollback -- its .fit is a scroll viewport, so the
+# cube's front face is the standing single-terminal example (history + follow).
+# Animation faces run --scrollback 0: they repaint in place and never scroll,
+# so this is just insurance against stray scrolling output.
 if ($HTTP_NU.store? | default null) != null and ($HTTP_NU.services? | default false) {
   $FACES | enumerate | each {|it|
     let runcmd = if $it.item.kind == "term" { "nu" } else if $it.item.kind == "aqua" { $AQUA } else { $"PLAYBIN ($it.item.style) 1000000" }
     let duplex = if $it.item.kind == "term" { "true" } else { "false" }
+    let scrollback = if $it.item.kind == "term" { "3000" } else { "0" }
     let cols = ($it.item.cols? | default 78)
     let rows = ($it.item.rows? | default 39)
     let closure = "{
   run: {||
-    ^PTYBIN run --cols COLS --rows ROWS --target 'grid-IDX' -- RUNCMD
+    ^PTYBIN run --cols COLS --rows ROWS --scrollback SCROLLBACK --target 'grid-IDX' -- RUNCMD
     | lines | each {|l|
         let e = try { $l | from json } catch { null }
-        if $e != null and $e.t == 'screen' {
-          $e.html | .append 'pty.screen.IDX' --ttl last:1
+        if $e == null { return }
+        match $e.t {
+          'screen' => ( $e.html | .append 'pty.screen.IDX' --ttl last:1 )
+          'diff'   => ( $l | .append 'pty.diff.IDX' --ttl ephemeral )
+          _ => null
         }
       } | ignore
   }
@@ -95,6 +109,7 @@ if ($HTTP_NU.store? | default null) != null and ($HTTP_NU.services? | default fa
       | str replace --all "RUNCMD" $runcmd
       | str replace --all "PLAYBIN" $PLAYSTYLE
       | str replace --all "DUPLEX" $duplex
+      | str replace --all "SCROLLBACK" $scrollback
       | str replace --all "COLS" ($cols | into string)
       | str replace --all "ROWS" ($rows | into string)
       | str replace --all "IDX" ($it.index | into string))
@@ -104,11 +119,12 @@ if ($HTTP_NU.store? | default null) != null and ($HTTP_NU.services? | default fa
 
 # Position class + placeholder label for each face, derived from FACES so the
 # layout stays a single source of truth. Fed to the template as `faces`.
+# `scroll` marks the term face: its .fit becomes a scrollback viewport.
 const POS = [f-front f-right f-back f-left f-top f-bottom]
 def face-views [] {
   $FACES | enumerate | each {|it|
     let label = if $it.item.kind == "term" { "nu terminal . type to me" } else if $it.item.kind == "aqua" { "asciiquarium" } else { $it.item.style }
-    {i: $it.index, cls: ($POS | get $it.index), label: $label}
+    {i: $it.index, cls: ($POS | get $it.index), label: $label, scroll: ($it.item.kind == "term")}
   }
 }
 
@@ -127,13 +143,31 @@ def face-views [] {
       .static ($HERE | path join "static") $"/($ctx.file)"
     })
 
-    # One stream for all six faces: follow every pty.screen.<n>, morph #grid-<n>.
-    # The stored html already carries id=grid-<n>, so datastar targets the right
-    # face with no per-face routing.
+    # One stream for all six faces: follow every pty.screen.<n> and
+    # pty.diff.<n>. Stored html carries id=grid-<n>, so datastar targets the
+    # right face with no per-face routing; a diff expands to up to three patch
+    # events (changed rows + cursor morph, appended rows, trimmed rows).
     (route {method: "GET", path: "/sse"} {|req ctx|
       .cat --follow
-      | where topic =~ '^pty\.screen\.[0-5]$'
-      | each {|f| .cas $f.hash | to datastar-patch-elements }
+      | where topic =~ '^pty\.(screen|diff)\.[0-5]$'
+      | each {|f|
+          let body = .cas $f.hash
+          if ($f.topic | str starts-with "pty.screen.") {
+            [($body | to datastar-patch-elements)]
+          } else {
+            let d = $body | from json
+            [
+              (if ($d.patch | is-not-empty) { $d.patch | to datastar-patch-elements })
+              (if ($d.append | is-not-empty) {
+                $d.append | to datastar-patch-elements --mode append --selector $"#($d.target)"
+              })
+              (if ($d.trim | is-not-empty) {
+                "" | to datastar-patch-elements --mode remove --selector ($d.trim | each {|id| $"#($id)"} | str join ",")
+              })
+            ] | compact
+          }
+        }
+      | flatten
       | to sse
       | metadata set --content-type "text/event-stream"
     })

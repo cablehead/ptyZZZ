@@ -8,7 +8,7 @@
    <div class=tumble>
     <div class=cube>
       {% for f in faces %}
-      <div class="face {{ f.cls }}"><div class=fit><div id="grid-{{ f.i }}">{{ f.label }}</div></div></div>
+      <div class="face {{ f.cls }}"><div class="fit{% if f.scroll %} scroll{% endif %}"><div id="grid-{{ f.i }}">{{ f.label }}</div></div></div>
       {% endfor %}
     </div>
    </div>
