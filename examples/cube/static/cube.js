@@ -30,7 +30,16 @@ addEventListener('resize', () => { fits.forEach(w => { delete w.dataset.key; fit
 // Returning to the bottom re-arms it.
 document.querySelectorAll('.fit.scroll').forEach(w => {
   let follow = true;
-  w.addEventListener('wheel', e => { if (e.deltaY < 0) follow = false; }, {passive: true});
+  // Drive the scroll from the wheel event ourselves. Native wheel scrolling
+  // of a container inside a continuously animating 3D transform is unreliable
+  // (compositor hit-testing), but the events still arrive and programmatic
+  // scrollTop works fine.
+  w.addEventListener('wheel', e => {
+    const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+    if (dy < 0) follow = false;
+    w.scrollTop += dy;
+    e.preventDefault();
+  }, {passive: false});
   let touchY = 0;
   w.addEventListener('touchstart', e => { touchY = e.touches[0].clientY; }, {passive: true});
   w.addEventListener('touchmove', e => {
