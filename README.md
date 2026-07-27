@@ -175,8 +175,10 @@ single keyframe is smaller than a stack of per-row diffs. So the writer can pick
 per frame: a heavy repaint ships a keyframe; quiet typing ships a few changed
 rows.
 
-ptyZZZ v0 ships keyframes only. The diff path is the next step; the wire already
-has room for it (`t` gains `diff`).
+ptyZZZ ships both: `screen` keyframes (start, resize, alt-screen flips, heavy
+repaints, and a healing checkpoint every `--keyframe-interval` seconds) and
+`diff` frames (changed rows, appended rows, trimmed row ids, cursor moves)
+between them. See PROTOCOL.md.
 
 ## HTML, not JSON
 

@@ -11,13 +11,35 @@ a nushell service closure adapts these lines to/from frames.
 ## stdout (events <- pty), one JSON object per line
 
     {"t":"screen","seqno":N,"cols":C,"rows":R,"html":"<div id=\"grid\"...>"}
+    {"t":"diff","seqno":N,"target":"grid","patch":"...","append":"...","trim":["grid-r-0"]}
     {"t":"exit","code":N}
 
-v0 emits only `screen`: the full visible grid, coalesced over a 16ms window
-(a burst collapses to one frame). The html is a `<div id="grid">` wrapping one
-`<div class="row" id="grid-r-{i}">` per visible row; the service forwards it as
-a datastar morph of `#grid`. `diff` frames (row/append/trim keyed by stable id)
-are a later revision; the wire stays the same shape, just more `t` values.
+`screen` is a keyframe: the full scrollback plus visible grid (`--scrollback`
+lines, default 3000; 0 = visible screen only) as one `<div id="grid">` wrapping
+a `<div class="row" id="grid-r-{stable}">` per line, keyed by wezterm's stable
+row index, plus a `<div class="cursor" id="grid-cursor">` overlay positioned by
+`--cursor-row`/`--cursor-col` CSS vars. Keyframes are emitted on start, on
+resize, on an alt-screen flip, when a burst changes more than half the rows,
+and as a healing checkpoint every `--keyframe-interval` seconds (default 5)
+while diffs are flowing. The adapter stores the latest keyframe (`ttl last:1`)
+as the join point for new subscribers.
+
+`diff` carries only what changed since the previous frame:
+
+    patch    changed rows, and the cursor overlay when it moved -- morph by id
+    append   rows that scrolled into the grid -- append into `#target`
+    trim     ids of rows that fell off the scrollback -- remove
+
+Diffs are ephemeral on the log (`ttl ephemeral`): live subscribers apply them,
+joiners start from the stored keyframe instead, and because every subscriber
+also receives the periodic keyframes, a missed or misapplied diff heals within
+one keyframe interval.
+
+Frames are emitted only when something visibly changed: damage is tracked per
+row via wezterm seqnos, re-rendered rows are byte-compared against a row cache,
+and byte-identical output (cursor-only escape traffic, no-op prompt redraws) is
+suppressed. Output is coalesced over a 16ms window (`--coalesce`), so a burst
+like `cat big.txt` becomes one frame instead of one per chunk.
 
 ## standalone probe (no xs)
 
