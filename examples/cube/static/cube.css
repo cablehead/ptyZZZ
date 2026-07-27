@@ -54,3 +54,4 @@ body{background:#000;color:var(--term-fg);
 .f5{color:var(--c5)}.f6{color:var(--c6)}.f7{color:var(--c7)}
 
 .hint{color:#666;font:12px monospace;position:fixed;bottom:8px;left:8px;margin:0}
+#metrics{bottom:24px;font-variant-numeric:tabular-nums}

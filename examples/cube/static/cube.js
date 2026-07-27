@@ -23,16 +23,50 @@ fits.forEach(w => new MutationObserver(() => fit(w))
   .observe(w, {childList:true, subtree:true, attributes:true}));
 addEventListener('resize', () => { fits.forEach(w => { delete w.dataset.key; fit(w); }); });
 
-// The scrollback face follows the tail like a terminal: pinned to the bottom
-// until the user scrolls back through history, resuming when they return.
+// The scrollback face follows the tail like a terminal. Follow breaks on
+// scroll-back INTENT (an upward wheel or drag), not on position: deriving it
+// from position races the pin -- the first ticks of a gesture are still near
+// the bottom, so a frame landing mid-gesture would snap the user back.
+// Returning to the bottom re-arms it.
 document.querySelectorAll('.fit.scroll').forEach(w => {
   let follow = true;
+  w.addEventListener('wheel', e => { if (e.deltaY < 0) follow = false; }, {passive: true});
+  let touchY = 0;
+  w.addEventListener('touchstart', e => { touchY = e.touches[0].clientY; }, {passive: true});
+  w.addEventListener('touchmove', e => {
+    if (e.touches[0].clientY > touchY) follow = false;
+    touchY = e.touches[0].clientY;
+  }, {passive: true});
   w.addEventListener('scroll', () => {
-    follow = w.scrollTop + w.clientHeight >= w.scrollHeight - 48;
+    if (w.scrollTop + w.clientHeight >= w.scrollHeight - 8) follow = true;
   });
-  new MutationObserver(() => { if(follow) w.scrollTop = w.scrollHeight; })
-    .observe(w, {childList:true, subtree:true});
+  new MutationObserver(() => { if (follow) w.scrollTop = w.scrollHeight; })
+    .observe(w, {childList: true, subtree: true, characterData: true});
 });
+
+// Live per-face metrics in the corner: patches applied and DOM churn over a
+// 1s window, measured at the point of truth for client cost -- what this
+// browser actually morphs. fps counts mutation batches (~= patch events, so a
+// diff frame's patch+append+remove counts as up to 3); kb sums added/changed
+// node bytes.
+const stats = fits.map(() => ({frames: 0, bytes: 0}));
+fits.forEach((w, i) => {
+  new MutationObserver(muts => {
+    stats[i].frames++;
+    for (const m of muts) {
+      for (const n of m.addedNodes) stats[i].bytes += (n.outerHTML || n.textContent || '').length;
+      if (m.type === 'characterData') stats[i].bytes += m.target.length;
+      if (m.type === 'attributes') stats[i].bytes += 16;
+    }
+  }).observe(w, {childList: true, subtree: true, characterData: true, attributes: true});
+});
+const mline = document.getElementById('metrics');
+setInterval(() => {
+  mline.textContent = stats
+    .map((s, i) => `f${i} ${s.frames}/s ${(s.bytes / 1024).toFixed(0)}kb`)
+    .join('  ');
+  stats.forEach(s => { s.frames = 0; s.bytes = 0; });
+}, 1000);
 
 // Keystrokes -> the interactive (front) face. POST /input appends a pty0.send
 // frame, which the duplex service feeds to that ptyZZZ's stdin. Sends the real
