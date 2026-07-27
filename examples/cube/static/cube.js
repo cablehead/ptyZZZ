@@ -51,6 +51,10 @@ document.querySelectorAll('.fit.scroll').forEach(w => {
   });
   new MutationObserver(() => { if (follow) w.scrollTop = w.scrollHeight; })
     .observe(w, {childList: true, subtree: true, characterData: true});
+  // Initial pin: the join keyframe may have been applied before these
+  // observers attached (load-order race), and an idle shell never mutates
+  // again -- without this the face sits at the top of history.
+  w.scrollTop = w.scrollHeight;
 });
 
 // Live per-face metrics in the corner: patches applied and DOM churn over a
