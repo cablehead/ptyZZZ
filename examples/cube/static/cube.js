@@ -23,9 +23,9 @@ fits.forEach(w => new MutationObserver(() => fit(w))
   .observe(w, {childList:true, subtree:true, attributes:true}));
 addEventListener('resize', () => { fits.forEach(w => { delete w.dataset.key; fit(w); }); });
 
-// Version + wheel counter shown in the metrics line, so a stale cached copy
+// Version + wheel counter shown in the metrics panel, so a stale cached copy
 // of this file is visible at a glance.
-const VERSION = 6;
+const VERSION = 7;
 let wheelCount = 0;
 
 // The scrollback face follows the tail like a terminal. Follow breaks on
@@ -33,13 +33,16 @@ let wheelCount = 0;
 // from position races the pin -- the first ticks of a gesture are still near
 // the bottom, so a frame landing mid-gesture would snap the user back.
 // Returning to the bottom re-arms it.
-document.querySelectorAll('.fit.scroll').forEach(w => {
+//
+// The wheel handler is attached to the WINDOW, not the face: the terminal is
+// the only scrollable thing on the page, and hit-testing a scroll container
+// inside a continuously animating 3D transform proved unreliable. Wheel
+// anywhere scrolls the terminal, mid-spin included.
+const scrollFace = document.querySelector('.fit.scroll');
+if (scrollFace) {
+  const w = scrollFace;
   let follow = true;
-  // Drive the scroll from the wheel event ourselves. Native wheel scrolling
-  // of a container inside a continuously animating 3D transform is unreliable
-  // (compositor hit-testing), but the events still arrive and programmatic
-  // scrollTop works fine.
-  w.addEventListener('wheel', e => {
+  addEventListener('wheel', e => {
     wheelCount++;
     const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
     if (dy < 0) follow = false;
@@ -47,10 +50,12 @@ document.querySelectorAll('.fit.scroll').forEach(w => {
     e.preventDefault();
   }, {passive: false});
   let touchY = 0;
-  w.addEventListener('touchstart', e => { touchY = e.touches[0].clientY; }, {passive: true});
-  w.addEventListener('touchmove', e => {
-    if (e.touches[0].clientY > touchY) follow = false;
-    touchY = e.touches[0].clientY;
+  addEventListener('touchstart', e => { touchY = e.touches[0].clientY; }, {passive: true});
+  addEventListener('touchmove', e => {
+    const y = e.touches[0].clientY;
+    if (y > touchY) follow = false;
+    w.scrollTop += touchY - y;
+    touchY = y;
   }, {passive: true});
   w.addEventListener('scroll', () => {
     if (w.scrollTop + w.clientHeight >= w.scrollHeight - 8) follow = true;
@@ -61,7 +66,7 @@ document.querySelectorAll('.fit.scroll').forEach(w => {
   // observers attached (load-order race), and an idle shell never mutates
   // again -- without this the face sits at the top of history.
   w.scrollTop = w.scrollHeight;
-});
+}
 
 // Live per-face metrics in the corner: patches applied and DOM churn over a
 // 1s window, measured at the point of truth for client cost -- what this
@@ -79,11 +84,13 @@ fits.forEach((w, i) => {
     }
   }).observe(w, {childList: true, subtree: true, characterData: true, attributes: true});
 });
+const FACE_NAMES = ['nu', 'boids', 'mandel', 'aqua', 'mandel', 'aqua'];
 const mline = document.getElementById('metrics');
 setInterval(() => {
-  mline.textContent = `v${VERSION} wheel:${wheelCount}  ` + stats
-    .map((s, i) => `f${i} ${s.frames}/s ${(s.bytes / 1024).toFixed(0)}kb`)
-    .join('  ');
+  mline.textContent = [`v${VERSION}  wheel ${wheelCount}`]
+    .concat(stats.map((s, i) =>
+      `${i} ${(FACE_NAMES[i] || '?').padEnd(6)} ${String(s.frames).padStart(3)}/s ${String((s.bytes / 1024).toFixed(0)).padStart(4)}kb`))
+    .join('\n');
   stats.forEach(s => { s.frames = 0; s.bytes = 0; });
 }, 1000);
 
