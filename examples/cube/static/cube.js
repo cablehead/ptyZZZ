@@ -23,6 +23,11 @@ fits.forEach(w => new MutationObserver(() => fit(w))
   .observe(w, {childList:true, subtree:true, attributes:true}));
 addEventListener('resize', () => { fits.forEach(w => { delete w.dataset.key; fit(w); }); });
 
+// Version + wheel counter shown in the metrics line, so a stale cached copy
+// of this file is visible at a glance.
+const VERSION = 6;
+let wheelCount = 0;
+
 // The scrollback face follows the tail like a terminal. Follow breaks on
 // scroll-back INTENT (an upward wheel or drag), not on position: deriving it
 // from position races the pin -- the first ticks of a gesture are still near
@@ -35,6 +40,7 @@ document.querySelectorAll('.fit.scroll').forEach(w => {
   // (compositor hit-testing), but the events still arrive and programmatic
   // scrollTop works fine.
   w.addEventListener('wheel', e => {
+    wheelCount++;
     const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
     if (dy < 0) follow = false;
     w.scrollTop += dy;
@@ -75,7 +81,7 @@ fits.forEach((w, i) => {
 });
 const mline = document.getElementById('metrics');
 setInterval(() => {
-  mline.textContent = stats
+  mline.textContent = `v${VERSION} wheel:${wheelCount}  ` + stats
     .map((s, i) => `f${i} ${s.frames}/s ${(s.bytes / 1024).toFixed(0)}kb`)
     .join('  ');
   stats.forEach(s => { s.frames = 0; s.bytes = 0; });
