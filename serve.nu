@@ -1,7 +1,7 @@
 # ptyZZZ experiment: a pty owned by an xs *service*, shown over one /sse.
 #
 # Run:
-#   ~/http-nu/target/debug/http-nu --dev --datastar --services --store ./store \
+#   ~/http-nu/target/release/http-nu --dev --datastar --services --store ./store \
 #     :5111 ~/ptyZZZ/serve.nu
 #
 # Flow:
@@ -19,6 +19,12 @@ use http-nu/datastar *
 use http-nu/router *
 
 const PTYZZZ = (path self | path dirname | path join "target" "release" "ptyZZZ")
+
+# Fail at load with a clear message rather than registering a service whose
+# spawn dies silently (the page would just sit at "connecting...").
+if not ($PTYZZZ | path exists) {
+  error make {msg: $"serve: missing binary, build it first: cargo build --release \(expected ($PTYZZZ))"}
+}
 
 # Register the pty service idempotently (needs --store + --services): append
 # xs.service.pty.create only if the stored definition is missing or changed.
