@@ -3,10 +3,19 @@
   ptyZZZ
   <br><br>
   <sup>A terminal as a unix pipe.</sup>
+  <br><br>
+  <a href="#install">Install</a>
+  ·
+  <a href="./PROTOCOL.md">Protocol</a>
+  ·
+  <a href="https://discord.com/invite/YNbScHBHrh">Discord</a>
 </p>
 </h1>
 
 <p align="center">
+  <a href="https://github.com/cablehead/ptyZZZ/releases">
+    <img src="https://img.shields.io/github/v/release/cablehead/ptyZZZ" alt="Release">
+  </a>
   <a href="https://discord.com/invite/YNbScHBHrh">
     <img src="https://img.shields.io/discord/1182364431435436042?logo=discord" alt="Discord">
   </a>
@@ -35,6 +44,36 @@ printf '{"t":"input","b":"ls\n"}\n' | ptyZZZ run -- nu
 Or wire it to [cross.stream](https://cross.stream), so its screen lands on a log
 and any number of readers can follow it. That second path is what the rest of
 this is about.
+
+## Install
+
+### [eget](https://github.com/zyedidia/eget)
+
+```bash
+eget cablehead/ptyZZZ
+```
+
+### Homebrew (macOS)
+
+```bash
+# Homebrew now asks you to trust a third-party tap before installing from it
+brew trust --formula cablehead/tap/ptyzzz
+# or if you use a few of cablehead's projects, and trust me, the whole tap
+# brew trust cablehead/tap
+brew install cablehead/tap/ptyzzz
+```
+
+### From source
+
+```bash
+cargo build --release            # binary lands at target/release/ptyZZZ
+```
+
+Prebuilt binaries (macos-arm64, linux-arm64, linux-amd64) are on the
+[releases page](https://github.com/cablehead/ptyZZZ/releases), built by the
+shared [cablehead/pipelines](https://github.com/cablehead/pipelines) workflow.
+Note that `serve.nu` and the cube example spawn the repo-local build at
+`target/release/ptyZZZ`, so for those, build from source.
 
 ## The protocol
 

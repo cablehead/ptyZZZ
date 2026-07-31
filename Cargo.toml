@@ -1,7 +1,10 @@
 [package]
 name = "ptyZZZ"
-version = "0.0.0"
+version = "0.0.1"
 edition = "2021"
+license = "MIT"
+description = "A terminal as a unix pipe: pty in, JSONL screen frames out"
+repository = "https://github.com/cablehead/ptyZZZ"
 
 [[bin]]
 name = "ptyZZZ"
