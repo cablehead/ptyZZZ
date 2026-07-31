@@ -27,8 +27,8 @@ https://github.com/user-attachments/assets/b0d48f3b-2adc-4dd4-99e3-cf04bf8e5265
 
 ptyZZZ runs a shell in a pty and renders its screen. It reads the shell's output,
 parses it with [wezterm-term](https://github.com/wezterm/wezterm) into a grid of
-character cells, and turns that grid into HTML. You send it keystrokes as JSONL on
-stdin; it sends the rendered screen back as JSONL on stdout.
+character cells, and turns that grid, scrollback included, into HTML. You send it
+keystrokes as JSONL on stdin; it sends the rendered screen back as JSONL on stdout.
 
 ```
 JSONL commands ──> ptyZZZ ──> JSONL screen frames
@@ -88,11 +88,18 @@ Screen out:
 
 ```
 {"t":"screen","seqno":N,"cols":C,"rows":R,"html":"<div id=\"grid\"...>"}
+{"t":"diff","seqno":N,"target":"grid","patch":"...","append":"...","trim":["grid-r-0"]}
 {"t":"exit","code":N}
 ```
 
-Output is coalesced over a 16ms window, so a burst like `cat big.txt` becomes one
-frame instead of one per chunk.
+`screen` is a keyframe: the scrollback (`--scrollback`, default 3000 lines) plus
+the visible grid, one row div per line, with a cursor overlay. `diff` carries
+only what changed since the last frame: patched rows, rows that scrolled into
+history, and the ids of rows that fell off the top. Damage is tracked per row
+and byte-identical output is suppressed, so an idle shell emits nothing. Output
+is coalesced over a 16ms window (`--coalesce`), so a burst like `cat big.txt`
+becomes one frame instead of one per chunk. [PROTOCOL.md](PROTOCOL.md) has the
+full wire format.
 
 ptyZZZ knows nothing about HTTP or cross.stream. It is a plain stdin/stdout
 program. You can drive it from a shell pipe, and only one small adapter has to
@@ -122,10 +129,13 @@ The adapter is the only cross.stream-aware code in the project:
   run: {||
     ^ptyZZZ run -- nu
     | lines | each {|l|
-        let e = $l | from json
+        let e = try { $l | from json } catch { null }
+        if $e == null { return }
         match $e.t {
-          screen => ( $e.html | .append pty.screen --ttl last:1 )
-          exit   => ( {code: $e.code} | .append pty.exit )
+          'screen' => ( $e.html | .append 'pty.screen' --ttl last:1 )
+          'diff'   => ( $l | .append 'pty.diff' --ttl ephemeral )
+          'exit'   => ( {code: $e.code} | to json | .append 'pty.exit' --ttl last:1 )
+          _ => null
         }
       } | ignore
   }
@@ -134,14 +144,19 @@ The adapter is the only cross.stream-aware code in the project:
 ```
 
 `.send` frames become ptyZZZ's stdin. Each line ptyZZZ prints is matched on its
-`t` field and appended to its own topic. The closure returns nothing
+`t` field and appended to its own topic: keyframes to `pty.screen` (`last:1`,
+the join point for new subscribers), diffs to `pty.diff` (`ephemeral`: live
+followers get them, nothing is stored). The closure returns nothing
 (`| ignore`), so cross.stream doesn't also copy the raw output onto a default
 `.recv` topic.
 
-The web tier is then a reader. The page opens one `/sse`, follows the
-`pty.screen` topic, and morphs each frame into `#grid`. A keystroke POSTs to
-`/input`, which appends a `pty.send` frame. The grid is rendered on the server,
-not in the browser.
+The web tier is then a reader. The page opens one `/sse` and follows both
+topics. A keyframe is one morph of `#grid`. A diff expands to as many as three
+datastar patch events: changed rows and the cursor morph by id, new rows append
+into the grid, expired rows are removed. A keystroke POSTs to `/input`, which
+appends a `pty.send` frame. The grid is rendered on the server, not in the
+browser, and the page follows the tail like a terminal until you scroll back
+through history.
 
 ```mermaid
 sequenceDiagram
@@ -159,7 +174,7 @@ sequenceDiagram
     Note over Browser,HTTP: client attaches
     Browser->>DS: data-init @get /sse
     DS->>HTTP: GET /sse
-    HTTP->>XS: follow topic pty.screen
+    HTTP->>XS: follow pty.screen + pty.diff
     XS-->>HTTP: replay last keyframe
     HTTP-->>DS: datastar-patch-elements
     DS->>Browser: morph #grid
@@ -175,11 +190,11 @@ sequenceDiagram
     Note over Sh,Browser: output
     Sh->>Pty: bytes via pty master
     Pty->>Pty: grid mutates, 16ms coalesce
-    Pty->>Svc: screen frame on stdout
-    Svc->>XS: append pty.screen
+    Pty->>Svc: screen or diff frame on stdout
+    Svc->>XS: append pty.screen / pty.diff
     XS-->>HTTP: follow yields frame
     HTTP-->>DS: datastar-patch-elements
-    DS->>Browser: morph #grid
+    DS->>Browser: patch #grid
 ```
 
 ## The pipe that deadlocks
@@ -203,9 +218,11 @@ keyframes with diffs between them.
 The full grid every frame bloats the log on every keystroke. Pure diffs can't
 survive a cold replay: a diff is relative to wezterm's in-memory row ids and
 sequence numbers, which never reach the log, so a fresh subscriber has nothing to
-apply them to. Keyframes-plus-diffs is the fit, and the shape cross.stream's own
-examples settle on: a snapshot frame (`ttl last:1`) plus deltas (`ttl time:Ns`)
-that bridge to the next snapshot.
+apply them to. Keyframes plus diffs is the fit. The stored keyframe
+(`ttl last:1`) is the join point; diffs are ephemeral, for live followers only.
+While diffs are flowing, a fresh keyframe goes out every `--keyframe-interval`
+seconds (default 5), so a joiner catches up from one keyframe and a missed or
+misapplied diff heals within one interval.
 
 The 16ms window caps output at about 62 frames per second per terminal, however
 fast the shell writes. The worst case for diffs is a full repaint, where every
@@ -214,10 +231,8 @@ single keyframe is smaller than a stack of per-row diffs. So the writer can pick
 per frame: a heavy repaint ships a keyframe; quiet typing ships a few changed
 rows.
 
-ptyZZZ ships both: `screen` keyframes (start, resize, alt-screen flips, heavy
-repaints, and a healing checkpoint every `--keyframe-interval` seconds) and
-`diff` frames (changed rows, appended rows, trimmed row ids, cursor moves)
-between them. See PROTOCOL.md.
+ptyZZZ picks per burst: start, resize, alt-screen flips, and repaints that
+touch more than half the rows ship a keyframe; everything else ships a diff.
 
 ## HTML, not JSON
 
@@ -231,10 +246,12 @@ cheap.
 
 ## Key by the session, not the clip
 
-Frames are keyed by the pty's session, so a closed pty's screen stays replayable
-on the log, and a respawn (new session, same pane) is a swap the web tier makes,
-not something the producer tracks. ptyZZZ only ever deals with one pty's bytes.
-Tracking sessions and respawning them is the web tier's job, above it.
+The topics here are fixed names (`pty.screen`, `pty.diff`). The shape a
+multi-terminal app wants is topics keyed by the pty's session, so a closed
+pty's screen stays replayable on the log, and a respawn (new session, same
+pane) is a swap the web tier makes, not something the producer tracks. ptyZZZ
+only ever deals with one pty's bytes. Tracking sessions and respawning them is
+the web tier's job, above it.
 
 ## Run it
 
@@ -248,9 +265,15 @@ service on boot and serves the one-page client.
 
 Needs [http-nu](https://github.com/cablehead/http-nu) (`--store` for the log,
 `--services` for the service, `--datastar` for the SSE helpers) and a `nu` on
-PATH. The terminal-rendering code is copied from
-[stacks2099](https://github.com/cablehead/stacks2099), packaged here as a
-standalone program that can run on a stream.
+PATH. The renderer started as a copy of
+[stacks2099](https://github.com/cablehead/stacks2099)'s; it has since grown
+row-level damage tracking and the diff path.
+
+## The cube
+
+[examples/cube](examples/cube) is the bigger demo: six live ptyZZZ views on
+the faces of a spinning CSS cube, one `/sse` carrying all of them. The front
+face is an interactive nu shell with browser-native scrollback.
 
 ## Driving it over HTTP
 
@@ -260,7 +283,7 @@ pty verbatim, so a command and the carriage return that submits it are two write
 
 ```
 # type a command, then submit it with a carriage return
-curl -X POST 127.0.0.1:5111/input --data-binary 'cargo run --example mandelbrot'
+curl -X POST 127.0.0.1:5111/input --data-binary 'ls -la'
 curl -X POST 127.0.0.1:5111/input --data-binary $'\r'
 ```
 
