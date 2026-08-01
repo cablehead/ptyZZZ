@@ -33,7 +33,10 @@ as the join point for new subscribers.
 Diffs are ephemeral on the log (`ttl ephemeral`): live subscribers apply them,
 joiners start from the stored keyframe instead, and because every subscriber
 also receives the periodic keyframes, a missed or misapplied diff heals within
-one keyframe interval.
+one keyframe interval. Since an ephemeral frame is never stored, the adapter
+should carry the diff payload in frame meta rather than the CAS
+(`null | .append pty.diff --ttl ephemeral --meta {body: $line}`) -- this skips
+a disk write per diff and a CAS read per subscriber.
 
 Frames are emitted only when something visibly changed: damage is tracked per
 row via wezterm seqnos, re-rendered rows are byte-compared against a row cache,

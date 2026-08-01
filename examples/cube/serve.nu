@@ -93,7 +93,9 @@ def register-service [topic: string, config: string] {
 
 # One pty service per face. The term face is duplex, so its pty0.send topic feeds
 # that ptyZZZ's stdin; each face renders into grid-<n>. Keyframes land on
-# pty.screen.<n> (last:1, the join point); diffs on pty.diff.<n> (ephemeral).
+# pty.screen.<n> (last:1, the join point); diffs on pty.diff.<n> (ephemeral,
+# payload in frame meta so no CAS write per diff -- see serve.nu at the repo
+# root for the numbers).
 # The term face keeps full scrollback -- its .fit is a scroll viewport, so the
 # cube's front face is the standing single-terminal example (history + follow).
 # Animation faces run --scrollback 0: they repaint in place and never scroll,
@@ -113,7 +115,7 @@ if ($HTTP_NU.store? | default null) != null and ($HTTP_NU.services? | default fa
         if $e == null { return }
         match $e.t {
           'screen' => ( $e.html | .append 'pty.screen.IDX' --ttl last:1 )
-          'diff'   => ( $l | .append 'pty.diff.IDX' --ttl ephemeral )
+          'diff'   => ( null | .append 'pty.diff.IDX' --ttl ephemeral --meta {body: $l} )
           _ => null
         }
       } | ignore
@@ -167,11 +169,10 @@ def face-views [] {
       .cat --follow
       | where topic =~ '^pty\.(screen|diff)\.[0-5]$'
       | each {|f|
-          let body = .cas $f.hash
           if ($f.topic | str starts-with "pty.screen.") {
-            [($body | to datastar-patch-elements)]
+            [(.cas $f.hash | to datastar-patch-elements)]
           } else {
-            let d = $body | from json
+            let d = $f.meta.body | from json
             [
               (if ($d.patch | is-not-empty) { $d.patch | to datastar-patch-elements })
               (if ($d.append | is-not-empty) {

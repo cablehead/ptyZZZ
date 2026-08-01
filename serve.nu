@@ -9,6 +9,12 @@
 #   ptyZZZ stdout -> service closure fans JSONL into frames:
 #     screen (keyframe) -> `pty.screen` (ttl last:1)    full grid; the join point
 #     diff              -> `pty.diff`   (ttl ephemeral) changed/appended/trimmed rows
+#
+# Diffs carry their payload in frame meta ({body: ...}), not the CAS. An
+# ephemeral frame is broadcast and never stored, so writing its content to the
+# CAS would be a disk write with no reader benefit -- benched at ~30us/frame
+# via CAS vs ~0.4us via meta, plus it saves a CAS read per subscriber per
+# frame on /sse. Keyframes stay in the CAS: stored (last:1), large, rare.
 #   GET  /sse     -> follow both topics, patch #grid
 #
 # A joiner replays the stored keyframe and applies live diffs on top; any
@@ -48,7 +54,7 @@ if ($HTTP_NU.store? | default null) != null and ($HTTP_NU.services? | default fa
         if $e == null { return }
         match $e.t {
           'screen' => ( $e.html | .append 'pty.screen' --ttl last:1 )
-          'diff'   => ( $l | .append 'pty.diff' --ttl ephemeral )
+          'diff'   => ( null | .append 'pty.diff' --ttl ephemeral --meta {body: $l} )
           'exit'   => ( {code: $e.code} | to json | .append 'pty.exit' --ttl last:1 )
           _ => null
         }
@@ -118,11 +124,10 @@ const PAGE = "<!doctype html>
       .cat --follow
       | where topic in ["pty.screen" "pty.diff"]
       | each {|f|
-          let body = .cas $f.hash
           if $f.topic == "pty.screen" {
-            [($body | to datastar-patch-elements)]
+            [(.cas $f.hash | to datastar-patch-elements)]
           } else {
-            let d = $body | from json
+            let d = $f.meta.body | from json
             [
               (if ($d.patch | is-not-empty) { $d.patch | to datastar-patch-elements })
               (if ($d.append | is-not-empty) {

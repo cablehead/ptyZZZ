@@ -133,7 +133,7 @@ The adapter is the only cross.stream-aware code in the project:
         if $e == null { return }
         match $e.t {
           'screen' => ( $e.html | .append 'pty.screen' --ttl last:1 )
-          'diff'   => ( $l | .append 'pty.diff' --ttl ephemeral )
+          'diff'   => ( null | .append 'pty.diff' --ttl ephemeral --meta {body: $l} )
           'exit'   => ( {code: $e.code} | to json | .append 'pty.exit' --ttl last:1 )
           _ => null
         }
@@ -146,9 +146,12 @@ The adapter is the only cross.stream-aware code in the project:
 `.send` frames become ptyZZZ's stdin. Each line ptyZZZ prints is matched on its
 `t` field and appended to its own topic: keyframes to `pty.screen` (`last:1`,
 the join point for new subscribers), diffs to `pty.diff` (`ephemeral`: live
-followers get them, nothing is stored). The closure returns nothing
-(`| ignore`), so cross.stream doesn't also copy the raw output onto a default
-`.recv` topic.
+followers get them, nothing is stored). Diffs carry their payload in frame
+meta rather than the CAS -- an ephemeral frame is never stored, so a CAS write
+would be disk I/O with no reader; skipping it cuts the append from ~30us to
+under 1us and saves a CAS read per subscriber per diff. The closure returns
+nothing (`| ignore`), so cross.stream doesn't also copy the raw output onto a
+default `.recv` topic.
 
 The web tier is then a reader. The page opens one `/sse` and follows both
 topics. A keyframe is one morph of `#grid`. A diff expands to as many as three
