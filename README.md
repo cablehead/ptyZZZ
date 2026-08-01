@@ -1,16 +1,17 @@
 <h1>
 <p align="center">
   ptyZZZ
-  <br><br>
-  <sup>A terminal as a unix pipe.</sup>
-  <br><br>
-  <a href="#install">Install</a>
-  ·
-  <a href="./PROTOCOL.md">Protocol</a>
-  ·
-  <a href="https://discord.com/invite/YNbScHBHrh">Discord</a>
-</p>
 </h1>
+  <p align="center">
+    A terminal as a unix pipe: keystrokes in as JSONL, the screen out as rendered HTML. Put a real shell in a web page with no emulator in the browser.
+    <br />
+    <a href="#install">Install</a>
+    ·
+    <a href="./PROTOCOL.md">Protocol</a>
+    ·
+    <a href="https://discord.com/invite/YNbScHBHrh">Discord</a>
+  </p>
+</p>
 
 <p align="center">
   <a href="https://github.com/cablehead/ptyZZZ/releases">
@@ -25,25 +26,79 @@ https://github.com/user-attachments/assets/b0d48f3b-2adc-4dd4-99e3-cf04bf8e5265
 
 ---
 
-ptyZZZ runs a shell in a pty and renders its screen. It reads the shell's output,
-parses it with [wezterm-term](https://github.com/wezterm/wezterm) into a grid of
-character cells, and turns that grid, scrollback included, into HTML. You send it
-keystrokes as JSONL on stdin; it sends the rendered screen back as JSONL on stdout.
+ptyZZZ runs a shell in a pty and emulates the terminal on the server. It parses
+the shell's output with [wezterm-term](https://github.com/wezterm/wezterm) into
+a grid of cells, then renders the grid, scrollback included, as HTML.
+Keystrokes go in as JSONL on stdin. Screen frames come out as JSONL on stdout.
 
 ```
 JSONL commands ──> ptyZZZ ──> JSONL screen frames
    (stdin)        pty + grid       (stdout)
 ```
 
-It is a filter you can run in a pipe:
+The browser gets finished HTML, so it runs no terminal emulator and holds no
+terminal state. Use ptyZZZ to put a real shell in a web page without
+[xterm.js](https://xtermjs.org) or
+[ghostty-web](https://github.com/coder/ghostty-web). One terminal can feed any
+number of viewers.
 
-```
-printf '{"t":"input","b":"ls\n"}\n' | ptyZZZ run -- nu
+## Try it
+
+```bash
+eget cablehead/ptyZZZ    # or see Install below
+printf '{"t":"input","b":"ls\\n"}\n' | ptyZZZ run -- nu
 ```
 
-Or wire it to [cross.stream](https://cross.stream), so its screen lands on a log
-and any number of readers can follow it. That second path is what the rest of
-this is about.
+This spawns `nu` in a pty and types `ls` into it. Screen frames print to
+stdout until stdin closes.
+
+The browser view needs [http-nu](https://github.com/cablehead/http-nu), a `nu`
+on PATH, and a source build (`serve.nu` spawns the repo-local binary):
+
+```bash
+cargo build --release
+http-nu --dev --datastar --services --store ./store 127.0.0.1:5111 serve.nu
+```
+
+Open http://127.0.0.1:5111 and type into the page. The shell runs on the
+server. The page just morphs the HTML it receives.
+
+The bigger demo is [examples/cube](examples/cube): six live terminals on the
+faces of a spinning CSS cube, and one SSE connection carries all six. The
+front face is an interactive shell with browser-native scrollback.
+
+## Why the emulator lives on the server
+
+The usual web terminal runs the emulator in the browser: xterm.js, or now
+ghostty-web. The server holds the pty and proxies raw bytes both ways.
+
+That works until the browser tab goes away. Any version of it that survives
+disconnects grows a server-side session, and the session has jobs beyond
+keeping the shell alive:
+
+- Programs query the terminal (where is the cursor, what kind of terminal is
+  this) and block until something answers. With no browser attached, the
+  server must answer.
+- A browser that reconnects needs the current screen. Replaying saved bytes
+  fails: a ring buffer can drop you into the middle of an escape sequence, and
+  the screen comes up scrambled.
+
+Both jobs take a terminal emulator. tmux settled this long ago: its server
+parses every byte the shell writes into an in-memory grid, and on attach it
+repaints that grid from scratch. A tmux client never sees the shell's raw
+output.
+
+So the proxy design ends up running two full emulators, one on each side of
+the wire. Wherever their parsers disagree, the screen corrupts. ptyZZZ keeps
+one. wezterm-term owns the grid next to the pty, and the browser renders the
+HTML it is sent.
+
+[stacks2099](https://github.com/cablehead/stacks2099) has run this shape for a
+while, and its sessions stopped corrupting when the client emulator went away.
+Its [journey.md](https://github.com/cablehead/stacks2099/blob/main/journey.md)
+covers the road from xterm.js and a byte proxy to here. ptyZZZ packages the
+result as a standalone process. The renderer started as a copy of
+stacks2099's and has since grown row-level damage tracking and diffs.
 
 ## Install
 
@@ -72,7 +127,7 @@ cargo build --release            # binary lands at target/release/ptyZZZ
 Prebuilt binaries (macos-arm64, linux-arm64, linux-amd64) are on the
 [releases page](https://github.com/cablehead/ptyZZZ/releases), built by the
 shared [cablehead/pipelines](https://github.com/cablehead/pipelines) workflow.
-Note that `serve.nu` and the cube example spawn the repo-local build at
+`serve.nu` and the cube example spawn the repo-local build at
 `target/release/ptyZZZ`, so for those, build from source.
 
 ## The protocol
@@ -92,37 +147,38 @@ Screen out:
 {"t":"exit","code":N}
 ```
 
-`screen` is a keyframe: the scrollback (`--scrollback`, default 3000 lines) plus
-the visible grid, one row div per line, with a cursor overlay. `diff` carries
-only what changed since the last frame: patched rows, rows that scrolled into
-history, and the ids of rows that fell off the top. Damage is tracked per row
-and byte-identical output is suppressed, so an idle shell emits nothing. Output
-is coalesced over a 16ms window (`--coalesce`), so a burst like `cat big.txt`
-becomes one frame instead of one per chunk. [PROTOCOL.md](PROTOCOL.md) has the
-full wire format.
+`screen` is a keyframe: the visible grid plus scrollback (`--scrollback`,
+default 3000 lines), one row div per line, with a cursor overlay. `diff`
+carries only what changed since the last frame: patched rows, rows newly
+scrolled into history, and the ids of rows that fell off the top.
+
+Damage is tracked per row, and unchanged output is suppressed, so an idle
+shell emits nothing. Output coalesces over a 16ms window (`--coalesce`), so a
+burst like `cat big.txt` becomes one frame instead of one per chunk.
+[PROTOCOL.md](PROTOCOL.md) has the full wire format.
 
 ptyZZZ knows nothing about HTTP or cross.stream. It is a plain stdin/stdout
-program. You can drive it from a shell pipe, and only one small adapter has to
-know how to turn its output into stream frames.
+program. The rest of this README connects it to
+[cross.stream](https://cross.stream), which puts the screen on a log that many
+readers can follow. The adapter for that is a few lines of Nushell, and an
+adapter for anything else that reads JSON lines would look much the same.
 
 ## Why on a stream
 
-[stacks2099](https://github.com/cablehead/stacks2099) already renders a pty
-server-side this way, but each terminal opens its own SSE connection. A handful
-of terminals plus the keystroke POSTs runs into the browser's ~6-connection
-limit over HTTP/1.1, and input stalls. HTTP/2 sidesteps it, but needs TLS.
+stacks2099 already renders a pty server-side, but each terminal opens its own
+SSE connection. A handful of terminals plus keystroke POSTs hits the browser's
+~6-connection limit on HTTP/1.1, and input stalls. HTTP/2 avoids the limit but
+needs TLS.
 
-The other option is to put the screen on a log. If each terminal is a topic, one
-connection can carry many of them, and you choose which to watch by which topics
-you subscribe to. ptyZZZ is the piece that makes a terminal fit that model: a
-plain process whose screen can become frames.
+A log removes the limit a different way. Each terminal is a topic. One
+connection carries as many terminals as you subscribe to.
 
 ## As a cross.stream service
 
 cross.stream services run a [Nushell](https://www.nushell.sh) closure as a
-long-lived process. With `duplex: true`, frames appended to `<name>.send` are fed
-to the closure's stdin; whatever the closure emits becomes `<name>.recv` frames.
-The adapter is the only cross.stream-aware code in the project:
+long-lived process. With `duplex: true`, frames appended to `<name>.send` feed
+the closure's stdin, and whatever the closure emits becomes `<name>.recv`
+frames. This adapter is the only cross.stream-aware code in the project:
 
 ```nushell
 {
@@ -143,23 +199,27 @@ The adapter is the only cross.stream-aware code in the project:
 }
 ```
 
-`.send` frames become ptyZZZ's stdin. Each line ptyZZZ prints is matched on its
-`t` field and appended to its own topic: keyframes to `pty.screen` (`last:1`,
-the join point for new subscribers), diffs to `pty.diff` (`ephemeral`: live
-followers get them, nothing is stored). Diffs carry their payload in frame
-meta rather than the CAS -- an ephemeral frame is never stored, so a CAS write
-would be disk I/O with no reader; skipping it cuts the append from ~30us to
-under 1us and saves a CAS read per subscriber per diff. The closure returns
-nothing (`| ignore`), so cross.stream doesn't also copy the raw output onto a
-default `.recv` topic.
+Each line ptyZZZ prints is matched on its `t` field and appended to a topic.
+Keyframes go to `pty.screen` with `ttl last:1`; the stored keyframe is where a
+new subscriber starts. Diffs go to `pty.diff` as ephemeral frames: live
+followers see them, nothing is stored.
 
-The web tier is then a reader. The page opens one `/sse` and follows both
-topics. A keyframe is one morph of `#grid`. A diff expands to as many as three
-datastar patch events: changed rows and the cursor morph by id, new rows append
-into the grid, expired rows are removed. A keystroke POSTs to `/input`, which
-appends a `pty.send` frame. The grid is rendered on the server, not in the
-browser, and the page follows the tail like a terminal until you scroll back
-through history.
+Diffs carry their payload in frame meta rather than the CAS. A CAS write for a
+frame that is never stored would be disk I/O nobody reads. Skipping it cuts
+the append from ~30us to under 1us. The closure ends with `| ignore` so
+cross.stream doesn't also copy raw output onto a default `.recv` topic.
+
+One pitfall: the external command must be the head of the closure pipeline.
+`$in | ^ptyZZZ run -- nu` deadlocks, because `$in` collects its whole input
+first and a duplex input stream never ends. The service already feeds `.send`
+frames to the head command's stdin.
+
+The web tier is a reader. The page opens one `/sse` and follows both topics. A
+keyframe is one morph of `#grid`. A diff becomes up to three patch events:
+changed rows and the cursor morph by id, new rows append into the grid, and
+expired rows are removed. A keystroke POSTs to `/input`, which appends a
+`pty.send` frame. The page follows the tail like a terminal until you scroll
+back into history.
 
 ```mermaid
 sequenceDiagram
@@ -200,98 +260,57 @@ sequenceDiagram
     DS->>Browser: patch #grid
 ```
 
-## The pipe that deadlocks
-
-The first version wrote `$in | ^ptyZZZ run -- nu`, threading the service input
-into ptyZZZ explicitly. It hung: the service went `active`, but no ptyZZZ process
-appeared.
-
-`$in` on a stream collects it before passing it on. The duplex input never ends,
-so `$in` blocked waiting for it to finish and the external command was never
-reached. The fix is to make the external the head of the pipeline. A duplex
-service feeds its input to the first command's stdin directly, the way
-`websocat | lines` does in the cross.stream docs. No `$in`. Worth knowing for any
-service that wraps a long-running CLI.
-
 ## What goes on the log
 
-A screen can be stored three ways: the full grid every frame, only the diffs, or
-keyframes with diffs between them.
+A screen can go on the log three ways: full grids, only diffs, or keyframes
+with diffs between them.
 
-The full grid every frame bloats the log on every keystroke. Pure diffs can't
-survive a cold replay: a diff is relative to wezterm's in-memory row ids and
-sequence numbers, which never reach the log, so a fresh subscriber has nothing to
-apply them to. Keyframes plus diffs is the fit. The stored keyframe
-(`ttl last:1`) is the join point; diffs are ephemeral, for live followers only.
-While diffs are flowing, a fresh keyframe goes out every `--keyframe-interval`
-seconds (default 5), so a joiner catches up from one keyframe and a missed or
+Full grids bloat the log on every keystroke. Diffs alone can't survive a cold
+replay, because a diff refers to wezterm's in-memory row ids and those never
+reach the log. A fresh subscriber would have nothing to apply it to.
+
+Keyframes plus diffs work. The stored keyframe (`ttl last:1`) is where a new
+subscriber starts; diffs are ephemeral. While diffs flow, a fresh keyframe
+still goes out every `--keyframe-interval` seconds (default 5), so a missed or
 misapplied diff heals within one interval.
 
-The 16ms window caps output at about 62 frames per second per terminal, however
-fast the shell writes. The worst case for diffs is a full repaint, where every
-visible row changes at once (htop, a vim redraw) -- and that is exactly where a
-single keyframe is smaller than a stack of per-row diffs. So the writer can pick
-per frame: a heavy repaint ships a keyframe; quiet typing ships a few changed
-rows.
-
-ptyZZZ picks per burst: start, resize, alt-screen flips, and repaints that
-touch more than half the rows ship a keyframe; everything else ships a diff.
+The 16ms window caps output near 62 frames per second per terminal, no matter
+how fast the shell writes. The worst case for diffs is a full repaint (htop, a
+vim redraw), where every visible row changes at once. That is also where one
+keyframe is smaller than a stack of row diffs. So ptyZZZ chooses per burst:
+start, resize, alt-screen flips, and repaints that touch more than half the
+rows ship a keyframe. Everything else ships a diff.
 
 ## HTML, not JSON
 
-The frame body is rendered HTML, not a structured list of cells. There is one
-writer and many readers, so the render should happen once, at the writer, and
-each reader just forwards the bytes. Store cells instead and every `/sse`
-connection has to rebuild the HTML itself, in Nushell, once per connection. JSON
-is smaller on disk, but Brotli closes most of that gap on the wire -- and you'd
-pay the render cost again on every connection, the exact path you wanted to keep
-cheap.
+The frame body is rendered HTML, not a structured list of cells. One writer
+serves many readers, so the render should happen once, at the writer, and each
+reader should just forward bytes. If the log stored cells, every `/sse`
+connection would rebuild the HTML itself, in Nushell, on every frame. JSON is
+smaller on disk, but Brotli closes most of that gap on the wire, and the
+per-connection render cost would remain.
 
 ## Key by the session, not the clip
 
-The topics here are fixed names (`pty.screen`, `pty.diff`). The shape a
-multi-terminal app wants is topics keyed by the pty's session, so a closed
-pty's screen stays replayable on the log, and a respawn (new session, same
-pane) is a swap the web tier makes, not something the producer tracks. ptyZZZ
-only ever deals with one pty's bytes. Tracking sessions and respawning them is
-the web tier's job, above it.
-
-## Run it
-
-```
-cargo build --release            # builds ptyZZZ
-http-nu --dev --datastar --services --store ./store 127.0.0.1:5111 serve.nu
-```
-
-Open http://127.0.0.1:5111 and type into the page. `serve.nu` registers the
-service on boot and serves the one-page client.
-
-Needs [http-nu](https://github.com/cablehead/http-nu) (`--store` for the log,
-`--services` for the service, `--datastar` for the SSE helpers) and a `nu` on
-PATH. The renderer started as a copy of
-[stacks2099](https://github.com/cablehead/stacks2099)'s; it has since grown
-row-level damage tracking and the diff path.
-
-## The cube
-
-[examples/cube](examples/cube) is the bigger demo: six live ptyZZZ views on
-the faces of a spinning CSS cube, one `/sse` carrying all of them. The front
-face is an interactive nu shell with browser-native scrollback.
+The topics here are fixed names (`pty.screen`, `pty.diff`). A multi-terminal
+app wants topics keyed by the pty's session. Then a closed pty's screen stays
+replayable on the log, and respawning a pane is just the web tier switching to
+a new session's topics. ptyZZZ only ever handles one pty. Sessions belong a
+layer above it.
 
 ## Driving it over HTTP
 
-Input is a POST that appends a `pty.send` frame, so anything that can make an HTTP
-request can type into the terminal. The body of `POST /input` is forwarded to the
-pty verbatim, so a command and the carriage return that submits it are two writes:
+Input is a POST that appends a `pty.send` frame, so anything that can make an
+HTTP request can type into the terminal. The body of `POST /input` goes to the
+pty verbatim. A command and the carriage return that submits it are two
+writes:
 
 ```
-# type a command, then submit it with a carriage return
 curl -X POST 127.0.0.1:5111/input --data-binary 'ls -la'
 curl -X POST 127.0.0.1:5111/input --data-binary $'\r'
 ```
 
-Send any bytes the same way, control characters included. Ctrl-C is `\x03`, Tab is
-`\t`, Escape is `\x1b`:
+Control characters work the same way. Ctrl-C is `\x03`, Escape is `\x1b`:
 
 ```
 curl -X POST 127.0.0.1:5111/input --data-binary $'\x03'   # interrupt
@@ -307,5 +326,5 @@ curl -s 127.0.0.1:5111/snap | sed 's/<[^>]*>/ /g'
 curl -sN 127.0.0.1:5111/sse
 ```
 
-The browser page uses this same path: it sends keystrokes to `/input` and morphs
-the screen frames into `#grid`.
+The browser page uses the same path: keystrokes POST to `/input`, and frames
+morph into `#grid`.
