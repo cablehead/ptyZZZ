@@ -24,16 +24,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use clap::Parser;
-use libghostty_vt::{
-    render::{CellIterator, Dirty, RenderState, RowIterator},
-    screen::{CellContentTag, CellWide, Screen, TrackedGridRef},
-    style::{PaletteIndex, StyleColor, Underline},
-    terminal::{Point, PointCoordinate, PointSpace},
-    Terminal, TerminalOptions,
-};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::Deserialize;
 use std::fmt::Write as _;
+
+mod vt;
+use vt::{ffi, CellFacts, Col, Vt};
 
 #[derive(Parser)]
 #[command(about = "own one pty, speak JSONL on stdio")]
@@ -92,12 +88,10 @@ enum Ev {
 }
 
 /// Fold one event into the terminal. Returns true when the pty is done.
-fn apply(term: &mut Terminal<'_, '_>, ev: Ev) -> bool {
+fn apply(term: &mut Vt, ev: Ev) -> bool {
     match ev {
-        Ev::Bytes(b) => term.vt_write(&b),
-        Ev::Resize { cols, rows } => {
-            let _ = term.resize(cols, rows, 0, 0);
-        }
+        Ev::Bytes(b) => term.feed(&b),
+        Ev::Resize { cols, rows } => term.resize(cols, rows),
         Ev::Eof => return true,
     }
     false
@@ -206,21 +200,7 @@ fn main() {
     // chunks, not a line count. Approximate the --scrollback lines contract
     // with ~cols*10 bytes per retained row (measured ~810 B/row at 80 cols);
     // pruning stays page-granular, so retention is approximate either way.
-    let mut term = Terminal::new(TerminalOptions {
-        cols,
-        rows,
-        max_scrollback: scrollback * cols as usize * 10,
-    })
-    .expect("terminal");
-    {
-        let writer = writer.clone();
-        term.on_pty_write(move |_t, data| {
-            let mut w = writer.lock().unwrap();
-            let _ = w.write_all(data);
-            let _ = w.flush();
-        })
-        .expect("on_pty_write");
-    }
+    let mut term = Vt::new(cols, rows, scrollback * cols as usize * 10, writer.clone());
 
     let out = std::io::stdout();
     let mut state = EmitState::new(target);
@@ -336,12 +316,7 @@ struct EmitState {
     /// rendered row html by monotonic row id; the keyframe is the ordered
     /// concatenation of this map
     cache: BTreeMap<u64, String>,
-    render_state: RenderState<'static>,
-    rows_iter: RowIterator<'static>,
-    cells_iter: CellIterator<'static>,
-    /// scroll odometer: a tracked grid ref pinned at the active top-left
-    /// after every tick, plus the row id it was pinned on
-    pin: Option<TrackedGridRef>,
+    /// row id the scroll-odometer pin (owned by Vt) was last pinned on
     pin_gid: u64,
     /// next unused row id; ids never repeat across epochs
     next_gid: u64,
@@ -366,10 +341,6 @@ impl EmitState {
         Self {
             target,
             cache: BTreeMap::new(),
-            render_state: RenderState::new().expect("render state"),
-            rows_iter: RowIterator::new().expect("row iterator"),
-            cells_iter: CellIterator::new().expect("cell iterator"),
-            pin: None,
             pin_gid: 0,
             next_gid: 0,
             vp_base: 0,
@@ -388,26 +359,16 @@ impl EmitState {
 
     /// Inspect the terminal, update the row cache, and produce the next frame:
     /// a keyframe, a diff, or None when nothing visible changed.
-    fn produce(
-        &mut self,
-        term: &mut Terminal<'static, 'static>,
-        keyframe_due: bool,
-    ) -> Option<serde_json::Value> {
-        let alt = matches!(term.active_screen(), Ok(Screen::Alternate));
-        let cols = term.cols().unwrap_or(0) as usize;
-        let rows = term.rows().unwrap_or(0) as usize;
+    fn produce(&mut self, term: &mut Vt, keyframe_due: bool) -> Option<serde_json::Value> {
+        let s = term.scalars();
+        let alt = s.alt;
+        let cols = s.cols as usize;
+        let rows = s.rows as usize;
         if cols == 0 || rows == 0 {
             return None;
         }
-        let scrollback_now = if alt {
-            0
-        } else {
-            term.scrollback_rows().unwrap_or(0) as u64
-        };
-        let (cx, cy) = (
-            term.cursor_x().unwrap_or(0) as usize,
-            term.cursor_y().unwrap_or(0) as usize,
-        );
+        let scrollback_now = if alt { 0 } else { s.scrollback_rows };
+        let (cx, cy) = (s.cursor_x as usize, s.cursor_y as usize);
 
         let size_changed = cols != self.last_cols || rows != self.last_rows;
         let flip = alt != self.last_alt;
@@ -435,7 +396,7 @@ impl EmitState {
         } else if flip && !alt {
             match self.saved_primary.take() {
                 Some((saved, scols, srows, svp_base))
-                    if scols == cols && srows == rows && self.pin.is_some() =>
+                    if scols == cols && srows == rows && term.has_pin() =>
                 {
                     self.cache = saved;
                     self.vp_base = svp_base;
@@ -465,16 +426,12 @@ impl EmitState {
 
         let mode = match mode {
             Mode::Normal { forced: f } if !alt => {
-                let pinned = self
-                    .pin
-                    .as_ref()
-                    .and_then(|p| p.point(PointSpace::Screen).ok().flatten());
-                match pinned {
-                    Some(p) => {
+                match term.pin_screen_y() {
+                    Some(pin_y) => {
                         // Rows above the pin are exactly the history rows we
                         // assigned contiguous ids to, so the pin's screen-space
                         // y converts directly into the id of screen row 0.
-                        let row0_gid = self.pin_gid.saturating_sub(p.y as u64);
+                        let row0_gid = self.pin_gid.saturating_sub(pin_y);
                         let new_base = (row0_gid + scrollback_now).max(self.vp_base);
                         self.vp_base = new_base;
                         forced = f;
@@ -551,54 +508,40 @@ impl EmitState {
         // byte-for-byte was touched but not visibly changed, so it drops out
         // of the diff.
         {
-            let snapshot = self
-                .render_state
-                .update(&*term)
-                .expect("render state update");
-            let full = matches!(snapshot.dirty(), Ok(Dirty::Full));
-            let mut row_iter = self.rows_iter.update(&snapshot).expect("row iteration");
+            let full = term.begin_frame();
             let mut y: u64 = 0;
             let mut text = String::with_capacity(16);
-            while let Some(row) = row_iter.next() {
+            let mut facts = CellFacts::default();
+            while let Some(dirty) = term.next_row() {
                 let gid = self.vp_base + y;
                 let is_new = gid >= self.last_max;
-                let dirty = row.dirty().unwrap_or(true);
                 if forced || full || is_new || dirty {
                     let mut html = String::with_capacity(64);
                     {
                         let mut rb = RowBuilder::begin(&mut html, &self.target, gid);
-                        let mut cell_iter =
-                            self.cells_iter.update(row).expect("cell iteration");
                         let mut x = 0usize;
-                        while let Some(cell) = cell_iter.next() {
+                        while term.next_cell(&mut facts) {
                             if x >= cols {
                                 break;
                             }
                             x += 1;
-                            let raw = match cell.raw_cell() {
-                                Ok(c) => c,
-                                Err(_) => continue,
-                            };
-                            match raw.wide() {
-                                Ok(CellWide::SpacerTail) | Ok(CellWide::SpacerHead) => continue,
-                                Ok(CellWide::Wide) => {
-                                    text.clear();
-                                    let _ = cell.graphemes_utf8(&mut text);
-                                    let attrs = attrs_for(&cell.style().ok(), &raw);
-                                    rb.cell(if text.is_empty() { " " } else { &text }, 2, &attrs);
-                                    continue;
-                                }
-                                _ => {}
+                            if matches!(
+                                facts.wide,
+                                ffi::CellWide::SPACER_TAIL | ffi::CellWide::SPACER_HEAD
+                            ) {
+                                continue;
                             }
-                            let styled = cell.has_styling().unwrap_or(false);
-                            let attrs = if styled {
-                                attrs_for(&cell.style().ok(), &raw)
-                            } else {
-                                attrs_for(&None, &raw)
-                            };
+                            let width = if facts.wide == ffi::CellWide::WIDE { 2 } else { 1 };
                             text.clear();
-                            let _ = cell.graphemes_utf8(&mut text);
-                            rb.cell(if text.is_empty() { " " } else { &text }, 1, &attrs);
+                            if facts.tag == ffi::CellContentTag::CODEPOINT_GRAPHEME {
+                                term.cell_graphemes(&mut text);
+                            } else if facts.codepoint != 0 {
+                                if let Some(c) = char::from_u32(facts.codepoint) {
+                                    text.push(c);
+                                }
+                            }
+                            let attrs = attrs_for(&facts);
+                            rb.cell(if text.is_empty() { " " } else { &text }, width, &attrs);
                         }
                         rb.finish();
                     }
@@ -614,23 +557,19 @@ impl EmitState {
                         appended.push(gid);
                     }
                 }
-                let _ = row.set_dirty(false);
+                if dirty {
+                    term.mark_row_clean();
+                }
                 y += 1;
             }
-            let _ = snapshot.set_dirty(Dirty::Clean);
+            term.end_frame();
         }
 
         // Re-pin the odometer at the current active top-left. The pin lives
         // on the primary screen; while alt is active it must stay where it
         // is, or it would re-resolve against the alt screen.
         if !alt {
-            let p = Point::Active(PointCoordinate { x: 0, y: 0 });
-            match self.pin.as_mut() {
-                Some(pin) => {
-                    let _ = pin.set(term, p);
-                }
-                None => self.pin = term.track_grid_ref(p).ok(),
-            }
+            term.repin();
             self.pin_gid = self.vp_base;
         }
 
@@ -729,8 +668,8 @@ struct Attrs {
     invisible: bool,
     strikethrough: bool,
     inverse: bool,
-    fg: StyleColor,
-    bg: StyleColor,
+    fg: Col,
+    bg: Col,
 }
 
 impl Default for Attrs {
@@ -743,44 +682,30 @@ impl Default for Attrs {
             invisible: false,
             strikethrough: false,
             inverse: false,
-            fg: StyleColor::None,
-            bg: StyleColor::None,
+            fg: Col::None,
+            bg: Col::None,
         }
     }
 }
 
-/// Fold a ghostty style plus the cell's content-tag background (an erased
-/// cell carries its bg color in the cell, not the style) into render attrs.
-fn attrs_for(
-    style: &Option<libghostty_vt::style::Style>,
-    raw: &libghostty_vt::screen::Cell,
-) -> Attrs {
-    let mut a = match style {
-        Some(s) => Attrs {
-            bold: s.bold,
-            faint: s.faint,
-            italic: s.italic,
-            underline: !matches!(s.underline, Underline::None),
-            invisible: s.invisible,
-            strikethrough: s.strikethrough,
-            inverse: s.inverse,
-            fg: s.fg_color,
-            bg: s.bg_color,
-        },
-        None => Attrs::default(),
+/// Fold a cell's style plus its content-tag background (an erased cell
+/// carries its bg color in the cell, not the style) into render attrs.
+fn attrs_for(f: &CellFacts) -> Attrs {
+    let s = &f.style;
+    let mut a = Attrs {
+        bold: s.bold,
+        faint: s.faint,
+        italic: s.italic,
+        underline: s.underline != ffi::SgrUnderline::NONE as i32,
+        invisible: s.invisible,
+        strikethrough: s.strikethrough,
+        inverse: s.inverse,
+        fg: vt::style_col(&s.fg_color),
+        bg: vt::style_col(&s.bg_color),
     };
-    match raw.content_tag() {
-        Ok(CellContentTag::BgColorPalette) => {
-            if let Ok(i) = raw.bg_color_palette() {
-                a.bg = StyleColor::Palette(i);
-            }
-        }
-        Ok(CellContentTag::BgColorRgb) => {
-            if let Ok(c) = raw.bg_color_rgb() {
-                a.bg = StyleColor::Rgb(c);
-            }
-        }
-        _ => {}
+    match f.content_bg() {
+        Col::None => {}
+        bg => a.bg = bg,
     }
     a
 }
@@ -816,22 +741,22 @@ fn palette_to_rgb(i: u8) -> (u8, u8, u8) {
     (l, l, l)
 }
 
-fn append_color_inline(out: &mut String, prop: &str, c: StyleColor, default_var: &str) {
+fn append_color_inline(out: &mut String, prop: &str, c: Col, default_var: &str) {
     match c {
-        StyleColor::None => {
+        Col::None => {
             if !default_var.is_empty() {
                 let _ = write!(out, "{prop}:var({default_var});");
             }
         }
-        StyleColor::Palette(PaletteIndex(i)) if i < 16 => {
+        Col::Palette(i) if i < 16 => {
             let _ = write!(out, "{prop}:var(--c{i});");
         }
-        StyleColor::Palette(PaletteIndex(i)) => {
+        Col::Palette(i) => {
             let (r, g, b) = palette_to_rgb(i);
             let _ = write!(out, "{prop}:#{r:02x}{g:02x}{b:02x};");
         }
-        StyleColor::Rgb(c) => {
-            let _ = write!(out, "{prop}:#{:02x}{:02x}{:02x};", c.r, c.g, c.b);
+        Col::Rgb(r, g, b) => {
+            let _ = write!(out, "{prop}:#{r:02x}{g:02x}{b:02x};");
         }
     }
 }
@@ -862,15 +787,15 @@ fn cell_class_and_style(attrs: &Attrs) -> (String, String) {
         append_color_inline(&mut style, "background", attrs.fg, "--term-fg");
     } else {
         match attrs.fg {
-            StyleColor::None => {}
-            StyleColor::Palette(PaletteIndex(i)) if i < 16 => {
+            Col::None => {}
+            Col::Palette(i) if i < 16 => {
                 let _ = write!(classes, " f{i}");
             }
             other => append_color_inline(&mut style, "color", other, ""),
         }
         match attrs.bg {
-            StyleColor::None => {}
-            StyleColor::Palette(PaletteIndex(i)) if i < 16 => {
+            Col::None => {}
+            Col::Palette(i) if i < 16 => {
                 let _ = write!(classes, " b{i}");
             }
             other => append_color_inline(&mut style, "background", other, ""),
@@ -977,66 +902,46 @@ impl<'a> RowBuilder<'a> {
     }
 }
 
-/// Render one scrollback row by walking its cells through grid refs. This is
-/// per-cell FFI, so it is reserved for rows the viewport snapshot can't see:
-/// rows that already scrolled off, and full-scrollback rebuilds.
+/// Render one scrollback row by stepping one grid ref across its cells. This
+/// path serves rows the viewport snapshot can't see: rows that already
+/// scrolled off, and full-scrollback rebuilds.
 fn render_history_row_into(
     out: &mut String,
     target: &str,
-    term: &Terminal,
+    term: &Vt,
     gid: u64,
     screen_y: u64,
     cols: usize,
 ) {
     let mut rb = RowBuilder::begin(out, target, gid);
-    let mut charbuf = [char::MAX; 32];
-    let mut text = String::with_capacity(8);
-    let mut x = 0usize;
-    while x < cols {
-        let gr = match term.grid_ref(Point::Screen(PointCoordinate {
-            x: x as u16,
-            y: screen_y as u32,
-        })) {
-            Ok(g) => g,
-            Err(_) => break,
-        };
-        let raw = match gr.cell() {
-            Ok(c) => c,
-            Err(_) => break,
-        };
-        let wide = raw.wide().unwrap_or(CellWide::Narrow);
-        if matches!(wide, CellWide::SpacerTail | CellWide::SpacerHead) {
+    if let Some(mut hr) = term.history_row(screen_y) {
+        let mut facts = CellFacts::default();
+        let mut text = String::with_capacity(8);
+        let mut x = 0u16;
+        while (x as usize) < cols {
+            if !hr.cell(x, &mut facts) {
+                break;
+            }
+            if matches!(
+                facts.wide,
+                ffi::CellWide::SPACER_TAIL | ffi::CellWide::SPACER_HEAD
+            ) {
+                x += 1;
+                continue;
+            }
+            let width = if facts.wide == ffi::CellWide::WIDE { 2 } else { 1 };
+            text.clear();
+            if facts.tag == ffi::CellContentTag::CODEPOINT_GRAPHEME {
+                hr.graphemes(&mut text);
+            } else if facts.codepoint != 0 {
+                if let Some(c) = char::from_u32(facts.codepoint) {
+                    text.push(c);
+                }
+            }
+            let attrs = attrs_for(&facts);
+            rb.cell(if text.is_empty() { " " } else { &text }, width, &attrs);
             x += 1;
-            continue;
         }
-        let width = if matches!(wide, CellWide::Wide) { 2 } else { 1 };
-        text.clear();
-        match raw.content_tag() {
-            Ok(CellContentTag::CodepointGrapheme) => {
-                if let Ok(n) = gr.graphemes(&mut charbuf) {
-                    for c in &charbuf[..n] {
-                        text.push(*c);
-                    }
-                }
-            }
-            _ => {
-                if let Ok(cp) = raw.codepoint() {
-                    if cp != 0 {
-                        if let Some(c) = char::from_u32(cp) {
-                            text.push(c);
-                        }
-                    }
-                }
-            }
-        }
-        let style = if raw.has_styling().unwrap_or(false) {
-            gr.style().ok()
-        } else {
-            None
-        };
-        let attrs = attrs_for(&style, &raw);
-        rb.cell(if text.is_empty() { " " } else { &text }, width, &attrs);
-        x += 1;
     }
     rb.finish();
 }
