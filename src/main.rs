@@ -55,6 +55,9 @@ enum Sub {
         /// scrollback lines kept and rendered (0 = visible screen only)
         #[arg(long, default_value_t = 3000)]
         scrollback: usize,
+        /// tee the raw pty byte stream to this file (for bench corpora)
+        #[arg(long)]
+        record: Option<std::path::PathBuf>,
         /// command to run (default: $SHELL or nu). Everything after `--`.
         #[arg(trailing_var_arg = true)]
         cmd: Vec<String>,
@@ -92,7 +95,7 @@ impl Write for SharedWriter {
 }
 
 fn main() {
-    let Sub::Run { cols, rows, target, coalesce, keyframe_interval, scrollback, cmd } =
+    let Sub::Run { cols, rows, target, coalesce, keyframe_interval, scrollback, record, cmd } =
         Args::parse().sub;
     let coalesce = Duration::from_millis(coalesce);
     let keyframe_interval = Duration::from_secs(keyframe_interval.max(1));
@@ -152,12 +155,16 @@ fn main() {
         let term = term.clone();
         let dirty = dirty.clone();
         let done = done.clone();
+        let mut record = record.map(|p| std::fs::File::create(p).expect("record file"));
         std::thread::spawn(move || {
             let mut buf = [0u8; 4096];
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
+                        if let Some(f) = record.as_mut() {
+                            let _ = f.write_all(&buf[..n]);
+                        }
                         term.lock().unwrap().advance_bytes(&buf[..n]);
                         bump(&dirty);
                     }
