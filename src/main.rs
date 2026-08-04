@@ -354,9 +354,17 @@ impl EmitState {
 
         // Damage since the last emit, limited to rows the client still has.
         // New rows are the append path; trimmed rows fell off the scrollback.
+        // Rows already in scrollback at the last scan are frozen -- apps
+        // can't address them, and the reflow/alt-flip cases that could move
+        // them force a full re-render above -- so only rows that were in
+        // the viewport at the last emit can have changed. Scanning from the
+        // old viewport top instead of the scrollback base keeps this
+        // O(rows), not O(scrollback); the old top also covers rows damaged
+        // and then scrolled off within one coalesce window.
         let overlap_end = max.min(self.last_max);
-        let damaged: Vec<StableRowIndex> = if !forced && overlap_end > base {
-            screen.get_changed_stable_rows(base..overlap_end, self.last_seqno)
+        let vp_start = (self.last_max - self.last_rows as StableRowIndex).max(base);
+        let damaged: Vec<StableRowIndex> = if !forced && overlap_end > vp_start {
+            screen.get_changed_stable_rows(vp_start..overlap_end, self.last_seqno)
         } else {
             Vec::new()
         };
