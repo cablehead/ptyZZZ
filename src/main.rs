@@ -3,9 +3,10 @@
 //! v1 renders the full scrollback (not just the visible grid) and tracks
 //! damage per row. Each emit is either a keyframe (`screen`: the whole grid as
 //! one div, the join point for new subscribers) or a diff (`diff`: changed
-//! rows, appended rows, trimmed row ids, cursor). Rows are keyed by wezterm's
-//! stable row index, rendered once into a cache, and re-rendered only when
-//! wezterm reports the line changed; re-rendered rows are byte-compared
+//! rows, appended rows, trimmed row ids, cursor). Rows are keyed by a stable
+//! row id derived from rio's grid (lines evicted off the scrollback ring plus
+//! physical index), rendered once into a cache, and re-rendered only when
+//! rio's viewport damage covers the line; re-rendered rows are byte-compared
 //! against the cache so output that changes nothing visible emits nothing.
 
 use std::collections::BTreeMap;
@@ -18,11 +19,23 @@ use clap::Parser;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::Deserialize;
 use std::fmt::Write as _;
-use wezterm_term::{
-    color::{ColorAttribute, ColorPalette},
-    CellAttributes, Intensity, StableRowIndex, Terminal, TerminalConfiguration, TerminalSize,
-    Underline,
-};
+
+use rio_vt::ansi::CursorShape;
+use rio_vt::config::colors::AnsiColor;
+use rio_vt::crosswords::grid::row::Row;
+use rio_vt::crosswords::grid::ExtrasTable;
+use rio_vt::crosswords::pos::Line;
+use rio_vt::crosswords::square::{ContentTag, Square, Wide};
+use rio_vt::crosswords::style::{StyleFlags, StyleId, StyleSet, DEFAULT_STYLE_ID};
+use rio_vt::crosswords::{Crosswords, CrosswordsSize, Mode, TermDamage};
+use rio_vt::event::{EventListener, RioEvent, WindowId};
+use rio_vt::performer::handler::Processor;
+
+/// Stable row id: `lines_evicted() + physical index`. rio counts every line
+/// ever evicted off the scrollback ring, so a row keeps its id while it
+/// scrolls from the viewport into history and the id is never reused.
+type StableRow = u64;
+type Term = Crosswords<PtyProxy>;
 
 #[derive(Parser)]
 #[command(about = "own one pty, speak JSONL on stdio")]
@@ -71,26 +84,17 @@ enum Cmd {
     Resize { cols: u16, rows: u16 },
 }
 
-#[derive(Debug)]
-struct MinimalConfig {
-    scrollback: usize,
-}
-impl TerminalConfiguration for MinimalConfig {
-    fn color_palette(&self) -> ColorPalette {
-        ColorPalette::default()
-    }
-    fn scrollback_size(&self) -> usize {
-        self.scrollback
-    }
-}
-
-struct SharedWriter(Arc<Mutex<Box<dyn Write + Send>>>);
-impl Write for SharedWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().write(buf)
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.0.lock().unwrap().flush()
+/// rio's terminal takes no writer; it answers queries (DSR, DA, DECRPM,
+/// XTGETTCAP, ...) by emitting `RioEvent::PtyWrite`. Route those bytes back
+/// into the pty master so applications that probe the terminal keep working.
+struct PtyProxy(Arc<Mutex<Box<dyn Write + Send>>>);
+impl EventListener for PtyProxy {
+    fn send_event(&self, event: RioEvent, _id: WindowId) {
+        if let RioEvent::PtyWrite(_route, text) = event {
+            let mut w = self.0.lock().unwrap();
+            let _ = w.write_all(text.as_bytes());
+            let _ = w.flush();
+        }
     }
 }
 
@@ -132,31 +136,27 @@ fn main() {
         Arc::new(Mutex::new(pair.master.take_writer().expect("writer")));
     let mut reader = pair.master.try_clone_reader().expect("reader");
 
-    let term = Terminal::new(
-        TerminalSize {
-            rows: size.rows as usize,
-            cols: size.cols as usize,
-            pixel_width: 0,
-            pixel_height: 0,
-            dpi: 0,
-        },
-        Arc::new(MinimalConfig { scrollback }),
-        "ptyZZZ",
-        "0",
-        Box::new(SharedWriter(writer.clone())),
+    let term = Crosswords::new(
+        CrosswordsSize::new(size.cols as usize, size.rows as usize),
+        CursorShape::Block,
+        PtyProxy(writer.clone()),
+        WindowId::from(0),
+        0,
+        scrollback,
     );
     let term = Arc::new(Mutex::new(term));
     let dirty = Arc::new((Mutex::new(0u64), Condvar::new()));
     let done = Arc::new(AtomicBool::new(false));
     let master = Arc::new(Mutex::new(pair.master));
 
-    // reader: drain pty -> feed wezterm -> bump dirty.
+    // reader: drain pty -> feed rio's parser -> bump dirty.
     {
         let term = term.clone();
         let dirty = dirty.clone();
         let done = done.clone();
         let mut record = record.map(|p| std::fs::File::create(p).expect("record file"));
         std::thread::spawn(move || {
+            let mut processor = Processor::default();
             let mut buf = [0u8; 4096];
             loop {
                 match reader.read(&mut buf) {
@@ -165,7 +165,7 @@ fn main() {
                         if let Some(f) = record.as_mut() {
                             let _ = f.write_all(&buf[..n]);
                         }
-                        term.lock().unwrap().advance_bytes(&buf[..n]);
+                        processor.advance(&mut *term.lock().unwrap(), &buf[..n]);
                         bump(&dirty);
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
@@ -203,13 +203,9 @@ fn main() {
                             pixel_width: 0,
                             pixel_height: 0,
                         });
-                        term.lock().unwrap().resize(TerminalSize {
-                            rows: rows as usize,
-                            cols: cols as usize,
-                            pixel_width: 0,
-                            pixel_height: 0,
-                            dpi: 0,
-                        });
+                        term.lock()
+                            .unwrap()
+                            .resize(CrosswordsSize::new(cols as usize, rows as usize));
                         bump(&dirty);
                     }
                     Err(_) => eprintln!("ptyZZZ: bad command: {line}"),
@@ -257,8 +253,8 @@ fn main() {
             state.dirty_since_keyframe && state.last_keyframe.elapsed() >= keyframe_interval;
         let started = Instant::now();
         let frame = {
-            let t = term.lock().unwrap();
-            state.produce(&t, keyframe_due)
+            let mut t = term.lock().unwrap();
+            state.produce(&mut t, keyframe_due)
         };
         if let Some(v) = frame {
             let mut w = out.lock();
@@ -295,12 +291,14 @@ fn bump(dirty: &Arc<(Mutex<u64>, Condvar)>) {
 
 struct EmitState {
     target: String,
-    /// rendered row html by stable row index; the keyframe is the ordered
+    /// rendered row html by stable row id; the keyframe is the ordered
     /// concatenation of this map
-    cache: BTreeMap<StableRowIndex, String>,
-    last_seqno: usize,
-    last_base: StableRowIndex,
-    last_max: StableRowIndex,
+    cache: BTreeMap<StableRow, String>,
+    /// monotonic frame counter; rio has no terminal seqno, so this stands in
+    /// for the protocol's `seqno` field
+    seq: u64,
+    last_base: StableRow,
+    last_max: StableRow,
     last_cols: usize,
     last_rows: usize,
     last_alt: bool,
@@ -315,7 +313,7 @@ impl EmitState {
         Self {
             target,
             cache: BTreeMap::new(),
-            last_seqno: 0,
+            seq: 0,
             last_base: 0,
             last_max: 0,
             last_cols: 0,
@@ -330,23 +328,33 @@ impl EmitState {
 
     /// Inspect the terminal, update the row cache, and produce the next frame:
     /// a keyframe, a diff, or None when nothing visible changed.
-    fn produce(&mut self, term: &Terminal, keyframe_due: bool) -> Option<serde_json::Value> {
-        let seqno = term.current_seqno();
-        let alt = term.is_alt_screen_active();
-        let size = term.get_size();
-        let (cols, rows) = (size.cols, size.rows);
-        let cursor = term.cursor_pos();
-        let screen = term.screen();
-        let total = screen.scrollback_rows();
-        let base = screen.phys_to_stable_row_index(0);
-        let max = base + total as StableRowIndex;
+    fn produce(&mut self, term: &mut Term, keyframe_due: bool) -> Option<serde_json::Value> {
+        self.seq += 1;
+        let seqno = self.seq;
+        let alt = term.mode().contains(Mode::ALT_SCREEN);
+        let cols = term.columns();
+        let rows = term.screen_lines();
+        let history = term.history_size();
+        let total = history + rows;
+        let base: StableRow = term.lines_evicted();
+        let max = base + total as StableRow;
+        let cursor = term.cursor();
         let cursor_now = (
-            total.saturating_sub(rows) + cursor.y.max(0) as usize,
-            cursor.x,
+            history + cursor.pos.row.0.max(0) as usize,
+            cursor.pos.col.0,
         );
 
+        // Consume rio's damage (viewport-only, consume-and-reset).
+        let mut damage_full = false;
+        let mut damage_lines: Vec<usize> = Vec::new();
+        match term.damage() {
+            TermDamage::Full => damage_full = true,
+            TermDamage::Partial(it) => damage_lines.extend(it.map(|l| l.line)),
+        }
+        term.reset_damage();
+
         // A resize reflows rows and an alt-screen flip swaps line storage;
-        // both invalidate the seqno diff basis, so re-render everything.
+        // both invalidate the diff basis, so re-render everything.
         let forced = !self.sent_initial
             || alt != self.last_alt
             || cols != self.last_cols
@@ -357,23 +365,36 @@ impl EmitState {
         // Rows already in scrollback at the last scan are frozen -- apps
         // can't address them, and the reflow/alt-flip cases that could move
         // them force a full re-render above -- so only rows that were in
-        // the viewport at the last emit can have changed. Scanning from the
-        // old viewport top instead of the scrollback base keeps this
-        // O(rows), not O(scrollback); the old top also covers rows damaged
-        // and then scrolled off within one coalesce window.
+        // the viewport at the last emit can have changed. rio's damage is
+        // positional over the current viewport: when the grid scrolled since
+        // the last emit, line numbers no longer identify the rows that
+        // changed (content keeps its stable id but moves lines), so fall
+        // back to scanning the old-viewport overlap; the row cache
+        // byte-compare drops the false positives. Either way this stays
+        // O(rows), not O(scrollback); the old viewport top also covers rows
+        // damaged and then scrolled off within one coalesce window.
         let overlap_end = max.min(self.last_max);
-        let vp_start = (self.last_max - self.last_rows as StableRowIndex).max(base);
-        let damaged: Vec<StableRowIndex> = if !forced && overlap_end > vp_start {
-            screen.get_changed_stable_rows(vp_start..overlap_end, self.last_seqno)
-        } else {
+        let vp_start = self.last_max.saturating_sub(self.last_rows as StableRow).max(base);
+        let scrolled = max != self.last_max || base != self.last_base;
+        let damaged: Vec<StableRow> = if forced || overlap_end <= vp_start {
             Vec::new()
+        } else if damage_full || scrolled {
+            (vp_start..overlap_end).collect()
+        } else {
+            damage_lines
+                .iter()
+                .filter_map(|&n| {
+                    let stable = base + (history + n) as StableRow;
+                    (stable >= vp_start && stable < overlap_end).then_some(stable)
+                })
+                .collect()
         };
-        let appended: Vec<StableRowIndex> = if forced {
+        let appended: Vec<StableRow> = if forced {
             Vec::new()
         } else {
             (self.last_max.max(base)..max).collect()
         };
-        let trimmed: Vec<StableRowIndex> = if forced {
+        let trimmed: Vec<StableRow> = if forced {
             Vec::new()
         } else {
             (self.last_base..base.min(self.last_max)).collect()
@@ -387,30 +408,31 @@ impl EmitState {
             && trimmed.is_empty()
             && !cursor_moved
         {
-            self.last_seqno = seqno;
             return None;
         }
 
         // Render damaged rows into the cache. A row whose new html matches the
         // cache byte-for-byte was touched but not visibly changed (a prompt
         // redraw writing identical cells); drop it from the diff.
-        let mut changed: Vec<StableRowIndex> = Vec::new();
+        let styles = &term.grid.style_set;
+        let extras = &term.grid.extras_table;
+        let mut changed: Vec<StableRow> = Vec::new();
         if forced {
             self.cache.clear();
-            let lines = screen.lines_in_phys_range(0..total);
-            for (i, line) in lines.iter().enumerate() {
-                let stable = base + i as StableRowIndex;
+            for phys in 0..total {
+                let stable = base + phys as StableRow;
+                let line = &term.grid[Line(phys as i32 - history as i32)];
                 let mut html = String::with_capacity(64);
-                render_row_into(&mut html, &self.target, line, cols, stable);
+                render_row_into(&mut html, &self.target, line, styles, extras, cols, stable);
                 self.cache.insert(stable, html);
             }
         } else {
             self.cache = self.cache.split_off(&base);
             for &stable in damaged.iter().chain(appended.iter()) {
                 let phys = (stable - base) as usize;
-                let line = &screen.lines_in_phys_range(phys..phys + 1)[0];
+                let line = &term.grid[Line(phys as i32 - history as i32)];
                 let mut html = String::with_capacity(64);
-                render_row_into(&mut html, &self.target, line, cols, stable);
+                render_row_into(&mut html, &self.target, line, styles, extras, cols, stable);
                 let fresh = self.cache.get(&stable) != Some(&html);
                 if fresh {
                     self.cache.insert(stable, html);
@@ -428,7 +450,6 @@ impl EmitState {
             && trimmed.is_empty()
             && !cursor_moved
         {
-            self.last_seqno = seqno;
             return None;
         }
 
@@ -474,7 +495,6 @@ impl EmitState {
             })
         };
 
-        self.last_seqno = seqno;
         self.last_base = base;
         self.last_max = max;
         self.last_cols = cols;
@@ -497,18 +517,57 @@ fn render_cursor_into(out: &mut String, target: &str, row: usize, col: usize) {
     );
 }
 
-/// Equivalence over exactly the attributes the renderer maps to output.
-/// Deliberately ignores non-rendered bits (blink, hyperlinks, wrap) so runs
-/// don't split on invisible differences.
-fn attrs_equiv(a: &CellAttributes, b: &CellAttributes) -> bool {
-    a.intensity() == b.intensity()
-        && a.italic() == b.italic()
-        && a.underline() == b.underline()
-        && a.invisible() == b.invisible()
-        && a.strikethrough() == b.strikethrough()
-        && a.reverse() == b.reverse()
-        && a.foreground() == b.foreground()
-        && a.background() == b.background()
+/// What a cell contributes to paint, reduced to a copyable key: either an id
+/// into the grid's interned style table, or an inline background for rio's
+/// bg-only cells (which skip the style table entirely). Comparing keys is the
+/// run-merge equivalence -- two cells with the same key share one span.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Paint {
+    Style(StyleId),
+    BgPalette(u8),
+    BgRgb(u8, u8, u8),
+}
+
+fn paint_of(sq: Square) -> Paint {
+    match sq.content_tag() {
+        ContentTag::Codepoint => Paint::Style(sq.style_id()),
+        ContentTag::BgPalette => Paint::BgPalette(sq.bg_palette_index()),
+        ContentTag::BgRgb => {
+            let (r, g, b) = sq.bg_rgb();
+            Paint::BgRgb(r, g, b)
+        }
+    }
+}
+
+/// A color as the renderer maps it to output: default (inherit / CSS var),
+/// one of the 16 palette slots (CSS var), or a concrete rgb.
+#[derive(Clone, Copy)]
+enum ColorClass {
+    Default,
+    Palette(u8),
+    Rgb(u8, u8, u8),
+}
+
+fn classify(c: AnsiColor) -> ColorClass {
+    match c {
+        AnsiColor::Named(n) => {
+            let v = n as u32;
+            if v < 16 {
+                ColorClass::Palette(v as u8)
+            } else {
+                // Foreground/Background and the dim/light derived names all
+                // render as the default fg/bg here, matching the previous
+                // renderer which had no such variants.
+                ColorClass::Default
+            }
+        }
+        AnsiColor::Indexed(i) if i < 16 => ColorClass::Palette(i),
+        AnsiColor::Indexed(i) => {
+            let (r, g, b) = palette_to_rgb(i);
+            ColorClass::Rgb(r, g, b)
+        }
+        AnsiColor::Spec(rgb) => ColorClass::Rgb(rgb.r, rgb.g, rgb.b),
+    }
 }
 
 fn palette_to_rgb(i: u8) -> (u8, u8, u8) {
@@ -542,67 +601,78 @@ fn palette_to_rgb(i: u8) -> (u8, u8, u8) {
     (l, l, l)
 }
 
-fn append_color_inline(out: &mut String, prop: &str, c: ColorAttribute, default_var: &str) {
+fn append_color_inline(out: &mut String, prop: &str, c: ColorClass, default_var: &str) {
     match c {
-        ColorAttribute::Default => {
+        ColorClass::Default => {
             if !default_var.is_empty() {
                 let _ = write!(out, "{prop}:var({default_var});");
             }
         }
-        ColorAttribute::PaletteIndex(i) if i < 16 => {
+        ColorClass::Palette(i) => {
             let _ = write!(out, "{prop}:var(--c{i});");
         }
-        ColorAttribute::PaletteIndex(i) => {
-            let (r, g, b) = palette_to_rgb(i);
-            let _ = write!(out, "{prop}:#{r:02x}{g:02x}{b:02x};");
-        }
-        ColorAttribute::TrueColorWithDefaultFallback(rgb)
-        | ColorAttribute::TrueColorWithPaletteFallback(rgb, _) => {
-            let r = (rgb.0 * 255.0).round() as u8;
-            let g = (rgb.1 * 255.0).round() as u8;
-            let b = (rgb.2 * 255.0).round() as u8;
+        ColorClass::Rgb(r, g, b) => {
             let _ = write!(out, "{prop}:#{r:02x}{g:02x}{b:02x};");
         }
     }
 }
 
-fn cell_class_and_style(attrs: &CellAttributes) -> (String, String) {
+fn cell_class_and_style(paint: Paint, styles: &StyleSet) -> (String, String) {
     let mut classes = String::new();
     let mut style = String::new();
-    match attrs.intensity() {
-        Intensity::Bold => classes.push_str(" sb"),
-        Intensity::Half => classes.push_str(" sd"),
-        Intensity::Normal => {}
-    }
-    if attrs.italic() {
-        classes.push_str(" si");
-    }
-    if !matches!(attrs.underline(), Underline::None) {
-        classes.push_str(" su");
-    }
-    if attrs.invisible() {
-        classes.push_str(" sx");
-    }
-    if attrs.strikethrough() {
-        classes.push_str(" ss");
-    }
-    if attrs.reverse() {
-        append_color_inline(&mut style, "color", attrs.background(), "--term-bg");
-        append_color_inline(&mut style, "background", attrs.foreground(), "--term-fg");
-    } else {
-        match attrs.foreground() {
-            ColorAttribute::Default => {}
-            ColorAttribute::PaletteIndex(i) if i < 16 => {
-                let _ = write!(classes, " f{i}");
-            }
-            other => append_color_inline(&mut style, "color", other, ""),
+    match paint {
+        Paint::BgPalette(i) if i < 16 => {
+            let _ = write!(classes, " b{i}");
         }
-        match attrs.background() {
-            ColorAttribute::Default => {}
-            ColorAttribute::PaletteIndex(i) if i < 16 => {
-                let _ = write!(classes, " b{i}");
+        Paint::BgPalette(i) => {
+            let (r, g, b) = palette_to_rgb(i);
+            append_color_inline(&mut style, "background", ColorClass::Rgb(r, g, b), "");
+        }
+        Paint::BgRgb(r, g, b) => {
+            append_color_inline(&mut style, "background", ColorClass::Rgb(r, g, b), "");
+        }
+        Paint::Style(id) => {
+            let s = styles.get(id);
+            let f = s.flags;
+            if f.contains(StyleFlags::BOLD) {
+                classes.push_str(" sb");
             }
-            other => append_color_inline(&mut style, "background", other, ""),
+            if f.contains(StyleFlags::DIM) {
+                classes.push_str(" sd");
+            }
+            if f.contains(StyleFlags::ITALIC) {
+                classes.push_str(" si");
+            }
+            if f.intersects(StyleFlags::ALL_UNDERLINES) {
+                classes.push_str(" su");
+            }
+            if f.contains(StyleFlags::HIDDEN) {
+                classes.push_str(" sx");
+            }
+            if f.contains(StyleFlags::STRIKEOUT) {
+                classes.push_str(" ss");
+            }
+            let fg = classify(s.fg);
+            let bg = classify(s.bg);
+            if f.contains(StyleFlags::INVERSE) {
+                append_color_inline(&mut style, "color", bg, "--term-bg");
+                append_color_inline(&mut style, "background", fg, "--term-fg");
+            } else {
+                match fg {
+                    ColorClass::Default => {}
+                    ColorClass::Palette(i) => {
+                        let _ = write!(classes, " f{i}");
+                    }
+                    other => append_color_inline(&mut style, "color", other, ""),
+                }
+                match bg {
+                    ColorClass::Default => {}
+                    ColorClass::Palette(i) => {
+                        let _ = write!(classes, " b{i}");
+                    }
+                    other => append_color_inline(&mut style, "background", other, ""),
+                }
+            }
         }
     }
     (classes, style)
@@ -624,40 +694,53 @@ fn cell_needs_box(glyph: &str, width: usize) -> bool {
     width != 1 || glyph.chars().count() > 1
 }
 
-/// One streaming pass over the row's cells: runs of equivalent attrs share one
-/// span, attrs are cloned only at run boundaries, and no per-cell allocation
-/// happens. Default-attr blanks are buffered so trailing ones are dropped --
-/// `white-space:pre` plus `.row{min-height}` keep the geometry without them.
+/// One streaming pass over the row's cells: runs with the same paint key share
+/// one span, styles are looked up only at run boundaries, and no per-cell
+/// allocation happens (grapheme clusters aside; they are rare). Default-paint
+/// blanks are buffered so trailing ones are dropped -- `white-space:pre` plus
+/// `.row{min-height}` keep the geometry without them.
 fn render_row_into(
     out: &mut String,
     target: &str,
-    line: &wezterm_term::Line,
+    row: &Row<Square>,
+    styles: &StyleSet,
+    extras: &ExtrasTable,
     cols: usize,
-    stable: StableRowIndex,
+    stable: StableRow,
 ) {
     let _ = write!(out, "<div class=\"row\" id=\"{target}-r-{stable}\">");
-    let default = CellAttributes::default();
+    let ncols = cols.min(row.inner.len());
     let mut expected = 0usize;
     let mut pending_blanks = 0usize;
     let mut span_open = false;
-    let mut run_attrs: Option<CellAttributes> = None;
+    let mut run_paint: Option<Paint> = None;
+    let mut cluster = String::new();
 
-    for cell in line.visible_cells() {
-        let col = cell.cell_index();
-        if col >= cols {
-            break;
-        }
+    for col in 0..ncols {
         if col < expected {
-            continue;
+            continue; // spacer cell of a wide char
         }
-        pending_blanks += col - expected;
-        let width = cell.width().max(1);
+        let sq = row.inner[col];
+        let width = match sq.wide() {
+            Wide::Wide => 2,
+            _ => 1,
+        };
         expected = col + width;
-        let s = cell.str();
-        let attrs = cell.attrs();
+        let paint = paint_of(sq);
+        let plain = paint == Paint::Style(DEFAULT_STYLE_ID);
+        let ch = sq.c();
 
-        let plain = attrs_equiv(attrs, &default);
-        if plain && width == 1 && (s == " " || s.is_empty()) {
+        // Multi-codepoint grapheme clusters live in the grid's extras table;
+        // the cell itself only carries the base char.
+        cluster.clear();
+        if matches!(sq.content_tag(), ContentTag::Codepoint) && sq.has_grapheme() {
+            if let Some(ex) = sq.extras_id().and_then(|id| extras.get(id)) {
+                cluster.push(if ch == '\0' { ' ' } else { ch });
+                cluster.extend(ex.zerowidth.iter());
+            }
+        }
+
+        if plain && width == 1 && cluster.is_empty() && (ch == ' ' || ch == '\0') {
             pending_blanks += 1;
             continue;
         }
@@ -665,7 +748,7 @@ fn render_row_into(
             if span_open {
                 out.push_str("</span>");
                 span_open = false;
-                run_attrs = None;
+                run_paint = None;
             }
             out.extend(std::iter::repeat(' ').take(pending_blanks));
             pending_blanks = 0;
@@ -674,32 +757,36 @@ fn render_row_into(
             if span_open {
                 out.push_str("</span>");
                 span_open = false;
-                run_attrs = None;
+                run_paint = None;
             }
-        } else {
-            let same = run_attrs.as_ref().is_some_and(|r| attrs_equiv(r, attrs));
-            if !same {
-                if span_open {
-                    out.push_str("</span>");
+        } else if run_paint != Some(paint) {
+            if span_open {
+                out.push_str("</span>");
+            }
+            let (classes, style) = cell_class_and_style(paint, styles);
+            if classes.is_empty() && style.is_empty() {
+                span_open = false;
+                run_paint = None;
+            } else {
+                out.push_str("<span class=\"c");
+                out.push_str(&classes);
+                out.push('"');
+                if !style.is_empty() {
+                    let _ = write!(out, " style=\"{style}\"");
                 }
-                let (classes, style) = cell_class_and_style(attrs);
-                if classes.is_empty() && style.is_empty() {
-                    span_open = false;
-                    run_attrs = None;
-                } else {
-                    out.push_str("<span class=\"c");
-                    out.push_str(&classes);
-                    out.push('"');
-                    if !style.is_empty() {
-                        let _ = write!(out, " style=\"{style}\"");
-                    }
-                    out.push('>');
-                    span_open = true;
-                    run_attrs = Some(attrs.clone());
-                }
+                out.push('>');
+                span_open = true;
+                run_paint = Some(paint);
             }
         }
-        let glyph = if s.is_empty() { " " } else { s };
+        let mut chbuf = [0u8; 4];
+        let glyph: &str = if !cluster.is_empty() {
+            &cluster
+        } else if ch == '\0' {
+            " "
+        } else {
+            ch.encode_utf8(&mut chbuf)
+        };
         if cell_needs_box(glyph, width) {
             let _ = write!(out, "<span class=\"wc\" style=\"--w:{width}\">");
             html_escape(glyph, out);
