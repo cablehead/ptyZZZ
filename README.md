@@ -27,7 +27,8 @@ https://github.com/user-attachments/assets/b0d48f3b-2adc-4dd4-99e3-cf04bf8e5265
 ---
 
 ptyZZZ runs a shell in a pty and emulates the terminal on the server, with
-[wezterm-term](https://github.com/wezterm/wezterm). Keystrokes go in as JSONL
+[libghostty-vt](https://crates.io/crates/libghostty-vt), the terminal core
+extracted from Ghostty. Keystrokes go in as JSONL
 on stdin. The screen, scrollback included, comes out as JSONL frames of
 rendered HTML.
 
@@ -110,6 +111,9 @@ brew install cablehead/tap/ptyzzz
 ```
 
 ### From source
+
+Building needs [Zig](https://ziglang.org/) 0.15.2 on PATH: the libghostty-vt
+dependency compiles Ghostty's terminal core from source at build time.
 
 ```bash
 cargo build --release            # binary lands at target/release/ptyZZZ
@@ -217,7 +221,7 @@ sequenceDiagram
     participant Pty as ptyZZZ
     participant Sh as nu
 
-    Note over Svc,Sh: service spawns ptyZZZ once, wezterm owns the grid
+    Note over Svc,Sh: service spawns ptyZZZ once, ghostty owns the grid
 
     Note over Browser,HTTP: client attaches
     Browser->>DS: data-init @get /sse
@@ -251,7 +255,7 @@ A screen can go on the log as full grids, as diffs, or as keyframes with diffs
 between them.
 
 Full grids bloat the log on every keystroke. Diffs alone can't survive a cold
-replay: they refer to wezterm's in-memory row ids, which never reach the log.
+replay: they refer to in-memory row ids, which never reach the log.
 Keyframes plus diffs work: the stored keyframe (`ttl last:1`) is where a
 subscriber starts, and diffs are ephemeral. While diffs flow, a fresh keyframe
 goes out every `--keyframe-interval` seconds (default 5), so a missed diff

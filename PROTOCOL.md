@@ -16,8 +16,9 @@ a nushell service closure adapts these lines to/from frames.
 
 `screen` is a keyframe: the full scrollback plus visible grid (`--scrollback`
 lines, default 3000; 0 = visible screen only) as one `<div id="grid">` wrapping
-a `<div class="row" id="grid-r-{stable}">` per line, keyed by wezterm's stable
-row index, plus a `<div class="cursor" id="grid-cursor">` overlay positioned by
+a `<div class="row" id="grid-r-{stable}">` per line, keyed by a stable row id
+that follows each line into scrollback, plus a
+`<div class="cursor" id="grid-cursor">` overlay positioned by
 `--cursor-row`/`--cursor-col` CSS vars. Keyframes are emitted on start, on
 resize, on an alt-screen flip, when a burst changes more than half the rows,
 and as a healing checkpoint every `--keyframe-interval` seconds (default 5)
@@ -39,7 +40,8 @@ should carry the diff payload in frame meta rather than the CAS
 a disk write per diff and a CAS read per subscriber.
 
 Frames are emitted only when something visibly changed: damage is tracked per
-row via wezterm seqnos, re-rendered rows are byte-compared against a row cache,
+row via the emulator's dirty flags, re-rendered rows are byte-compared against
+a row cache,
 and byte-identical output (cursor-only escape traffic, no-op prompt redraws) is
 suppressed. Output is coalesced over a 16ms window (`--coalesce`), so a burst
 like `cat big.txt` becomes one frame instead of one per chunk.

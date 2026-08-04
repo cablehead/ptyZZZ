@@ -1,28 +1,39 @@
 //! ptyZZZ: own one pty, speak JSONL on stdio. See PROTOCOL.md.
 //!
-//! v1 renders the full scrollback (not just the visible grid) and tracks
-//! damage per row. Each emit is either a keyframe (`screen`: the whole grid as
-//! one div, the join point for new subscribers) or a diff (`diff`: changed
-//! rows, appended rows, trimmed row ids, cursor). Rows are keyed by wezterm's
-//! stable row index, rendered once into a cache, and re-rendered only when
-//! wezterm reports the line changed; re-rendered rows are byte-compared
-//! against the cache so output that changes nothing visible emits nothing.
+//! This build emulates the terminal with libghostty-vt (Ghostty's terminal
+//! core) instead of wezterm-term. The frame protocol is unchanged: each emit
+//! is either a keyframe (`screen`: the whole grid as one div, the join point
+//! for new subscribers) or a diff (`diff`: changed rows, appended rows,
+//! trimmed row ids, cursor).
+//!
+//! Ghostty's render-state API is viewport-only, so stable row identity is
+//! maintained here rather than borrowed from the emulator: a monotonic row id
+//! (gid) is assigned to every row as it enters the viewport, and a tracked
+//! grid ref pinned at the active top-left acts as a scroll odometer between
+//! ticks. Rows that scroll into history keep their gid and their cached HTML;
+//! rows that fly through the viewport inside one coalesce window are read
+//! back out of scrollback via grid refs. Keyframes are the ordered
+//! concatenation of the cache, so scrollback survives without re-reading it.
+//! A resize reflows the primary screen and invalidates the cache, so the
+//! whole scrollback is re-read via grid refs (slow path, rare).
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, Read, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use clap::Parser;
+use libghostty_vt::{
+    render::{CellIterator, Dirty, RenderState, RowIterator},
+    screen::{CellContentTag, CellWide, Screen, TrackedGridRef},
+    style::{PaletteIndex, StyleColor, Underline},
+    terminal::{Point, PointCoordinate, PointSpace},
+    Terminal, TerminalOptions,
+};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::Deserialize;
 use std::fmt::Write as _;
-use wezterm_term::{
-    color::{ColorAttribute, ColorPalette},
-    CellAttributes, Intensity, StableRowIndex, Terminal, TerminalConfiguration, TerminalSize,
-    Underline,
-};
 
 #[derive(Parser)]
 #[command(about = "own one pty, speak JSONL on stdio")]
@@ -71,27 +82,25 @@ enum Cmd {
     Resize { cols: u16, rows: u16 },
 }
 
-#[derive(Debug)]
-struct MinimalConfig {
-    scrollback: usize,
-}
-impl TerminalConfiguration for MinimalConfig {
-    fn color_palette(&self) -> ColorPalette {
-        ColorPalette::default()
-    }
-    fn scrollback_size(&self) -> usize {
-        self.scrollback
-    }
+/// Events folded into the terminal by the emitter thread. The ghostty
+/// Terminal is not Send, so it lives on the emitter thread and the pty
+/// reader/stdin threads feed it through this channel.
+enum Ev {
+    Bytes(Vec<u8>),
+    Resize { cols: u16, rows: u16 },
+    Eof,
 }
 
-struct SharedWriter(Arc<Mutex<Box<dyn Write + Send>>>);
-impl Write for SharedWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().write(buf)
+/// Fold one event into the terminal. Returns true when the pty is done.
+fn apply(term: &mut Terminal<'_, '_>, ev: Ev) -> bool {
+    match ev {
+        Ev::Bytes(b) => term.vt_write(&b),
+        Ev::Resize { cols, rows } => {
+            let _ = term.resize(cols, rows, 0, 0);
+        }
+        Ev::Eof => return true,
     }
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.0.lock().unwrap().flush()
-    }
+    false
 }
 
 fn main() {
@@ -131,30 +140,13 @@ fn main() {
     let writer: Arc<Mutex<Box<dyn Write + Send>>> =
         Arc::new(Mutex::new(pair.master.take_writer().expect("writer")));
     let mut reader = pair.master.try_clone_reader().expect("reader");
-
-    let term = Terminal::new(
-        TerminalSize {
-            rows: size.rows as usize,
-            cols: size.cols as usize,
-            pixel_width: 0,
-            pixel_height: 0,
-            dpi: 0,
-        },
-        Arc::new(MinimalConfig { scrollback }),
-        "ptyZZZ",
-        "0",
-        Box::new(SharedWriter(writer.clone())),
-    );
-    let term = Arc::new(Mutex::new(term));
-    let dirty = Arc::new((Mutex::new(0u64), Condvar::new()));
-    let done = Arc::new(AtomicBool::new(false));
     let master = Arc::new(Mutex::new(pair.master));
 
-    // reader: drain pty -> feed wezterm -> bump dirty.
+    let (tx, rx) = mpsc::channel::<Ev>();
+
+    // reader: drain pty -> event channel.
     {
-        let term = term.clone();
-        let dirty = dirty.clone();
-        let done = done.clone();
+        let tx = tx.clone();
         let mut record = record.map(|p| std::fs::File::create(p).expect("record file"));
         std::thread::spawn(move || {
             let mut buf = [0u8; 4096];
@@ -165,24 +157,22 @@ fn main() {
                         if let Some(f) = record.as_mut() {
                             let _ = f.write_all(&buf[..n]);
                         }
-                        term.lock().unwrap().advance_bytes(&buf[..n]);
-                        bump(&dirty);
+                        if tx.send(Ev::Bytes(buf[..n].to_vec())).is_err() {
+                            break;
+                        }
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                     Err(_) => break,
                 }
             }
-            done.store(true, Ordering::SeqCst);
-            bump(&dirty);
+            let _ = tx.send(Ev::Eof);
         });
     }
 
-    // stdin: JSONL commands -> pty.
+    // stdin: JSONL commands -> pty (input) / event channel (resize).
     {
         let writer = writer.clone();
         let master = master.clone();
-        let term = term.clone();
-        let dirty = dirty.clone();
         std::thread::spawn(move || {
             let stdin = std::io::stdin();
             for line in stdin.lock().lines() {
@@ -203,14 +193,7 @@ fn main() {
                             pixel_width: 0,
                             pixel_height: 0,
                         });
-                        term.lock().unwrap().resize(TerminalSize {
-                            rows: rows as usize,
-                            cols: cols as usize,
-                            pixel_width: 0,
-                            pixel_height: 0,
-                            dpi: 0,
-                        });
-                        bump(&dirty);
+                        let _ = tx.send(Ev::Resize { cols, rows });
                     }
                     Err(_) => eprintln!("ptyZZZ: bad command: {line}"),
                 }
@@ -218,48 +201,100 @@ fn main() {
         });
     }
 
-    // emitter: wait on dirty (or an owed keyframe), coalesce, emit frames.
+    // emitter (this thread): own the terminal, fold events, emit frames.
+    // ghostty's max_scrollback is a byte budget consumed in page-sized
+    // chunks, not a line count. Approximate the --scrollback lines contract
+    // with ~cols*10 bytes per retained row (measured ~810 B/row at 80 cols);
+    // pruning stays page-granular, so retention is approximate either way.
+    let mut term = Terminal::new(TerminalOptions {
+        cols,
+        rows,
+        max_scrollback: scrollback * cols as usize * 10,
+    })
+    .expect("terminal");
+    {
+        let writer = writer.clone();
+        term.on_pty_write(move |_t, data| {
+            let mut w = writer.lock().unwrap();
+            let _ = w.write_all(data);
+            let _ = w.flush();
+        })
+        .expect("on_pty_write");
+    }
+
     let out = std::io::stdout();
     let mut state = EmitState::new(target);
-    let mut last_gen = u64::MAX; // != 0 so the first pass emits immediately
+    let mut done = false;
     // Cost of building+writing the previous frame; the coalesce sleep is
     // shortened by this much so continuous output emits on a steady
     // ~coalesce cadence instead of coalesce + frame cost.
     let mut frame_cost = Duration::ZERO;
     loop {
-        {
-            let (lock, cv) = &*dirty;
-            let mut g = lock.lock().unwrap();
-            loop {
-                if *g != last_gen || done.load(Ordering::SeqCst) {
-                    break;
-                }
-                let due_in = if state.dirty_since_keyframe {
-                    keyframe_interval.saturating_sub(state.last_keyframe.elapsed())
-                } else {
-                    Duration::from_secs(3600)
-                };
-                if due_in.is_zero() {
-                    break;
-                }
-                let (ng, _) = cv.wait_timeout(g, due_in.min(Duration::from_secs(1))).unwrap();
-                g = ng;
+        // Wait for pty output, a resize, or an owed keyframe.
+        let mut got = false;
+        while !done {
+            let due_in = if state.dirty_since_keyframe {
+                keyframe_interval.saturating_sub(state.last_keyframe.elapsed())
+            } else {
+                Duration::from_secs(3600)
+            };
+            if due_in.is_zero() {
+                break;
             }
-            last_gen = *g;
+            match rx.recv_timeout(due_in.min(Duration::from_secs(1))) {
+                Ok(ev) => {
+                    done = apply(&mut term, ev);
+                    got = true;
+                    break;
+                }
+                Err(RecvTimeoutError::Timeout) => continue,
+                Err(RecvTimeoutError::Disconnected) => {
+                    done = true;
+                    break;
+                }
+            }
         }
-        if !done.load(Ordering::SeqCst) {
-            std::thread::sleep(coalesce.saturating_sub(frame_cost));
-            let (lock, _) = &*dirty;
-            last_gen = *lock.lock().unwrap();
+        // Coalesce: keep folding events until the window closes. Bytes are
+        // fed to the terminal on arrival, so query responses (DSR/DA) go
+        // back to the pty immediately; only frame emission is delayed.
+        if got && !done {
+            let deadline = Instant::now() + coalesce.saturating_sub(frame_cost);
+            loop {
+                let left = deadline.saturating_duration_since(Instant::now());
+                if left.is_zero() {
+                    while let Ok(ev) = rx.try_recv() {
+                        if apply(&mut term, ev) {
+                            done = true;
+                            break;
+                        }
+                    }
+                    break;
+                }
+                match rx.recv_timeout(left) {
+                    Ok(ev) => {
+                        if apply(&mut term, ev) {
+                            done = true;
+                            break;
+                        }
+                    }
+                    Err(RecvTimeoutError::Timeout) => break,
+                    Err(RecvTimeoutError::Disconnected) => {
+                        done = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if done {
+            while let Ok(ev) = rx.try_recv() {
+                apply(&mut term, ev);
+            }
         }
 
         let keyframe_due =
             state.dirty_since_keyframe && state.last_keyframe.elapsed() >= keyframe_interval;
         let started = Instant::now();
-        let frame = {
-            let t = term.lock().unwrap();
-            state.produce(&t, keyframe_due)
-        };
+        let frame = state.produce(&mut term, keyframe_due);
         if let Some(v) = frame {
             let mut w = out.lock();
             // A dead stdout means no one is listening (the adapter that
@@ -271,7 +306,7 @@ fn main() {
         }
         frame_cost = started.elapsed();
 
-        if done.load(Ordering::SeqCst) {
+        if done {
             break;
         }
     }
@@ -282,25 +317,36 @@ fn main() {
     let _ = w.flush();
 }
 
-fn bump(dirty: &Arc<(Mutex<u64>, Condvar)>) {
-    let (lock, cv) = &**dirty;
-    {
-        let mut g = lock.lock().unwrap();
-        *g = g.wrapping_add(1);
-    }
-    cv.notify_all();
-}
-
 // --- frame production --------------------------------------------------------
+
+/// How this tick maps rows to ids.
+enum Mode {
+    /// Steady state on the primary screen: pin math gives the scroll delta.
+    Normal { forced: bool },
+    /// Full re-derivation on the primary screen: fresh id epoch, scrollback
+    /// re-read via grid refs. Used for startup, resize, and pin loss.
+    Rebuild,
+    /// Fresh id epoch covering only the viewport (alt screen has no
+    /// scrollback). Used on alt entry and alt resize.
+    AltEpoch,
+}
 
 struct EmitState {
     target: String,
-    /// rendered row html by stable row index; the keyframe is the ordered
+    /// rendered row html by monotonic row id; the keyframe is the ordered
     /// concatenation of this map
-    cache: BTreeMap<StableRowIndex, String>,
-    last_seqno: usize,
-    last_base: StableRowIndex,
-    last_max: StableRowIndex,
+    cache: BTreeMap<u64, String>,
+    render_state: RenderState<'static>,
+    rows_iter: RowIterator<'static>,
+    cells_iter: CellIterator<'static>,
+    /// scroll odometer: a tracked grid ref pinned at the active top-left
+    /// after every tick, plus the row id it was pinned on
+    pin: Option<TrackedGridRef>,
+    pin_gid: u64,
+    /// next unused row id; ids never repeat across epochs
+    next_gid: u64,
+    vp_base: u64,
+    last_max: u64,
     last_cols: usize,
     last_rows: usize,
     last_alt: bool,
@@ -308,6 +354,11 @@ struct EmitState {
     sent_initial: bool,
     last_keyframe: Instant,
     dirty_since_keyframe: bool,
+    /// primary-screen cache parked while the alt screen is active, with the
+    /// (cols, rows, vp_base) it was rendered at; restored on alt exit if the
+    /// size still matches, otherwise the scrollback is re-read
+    saved_primary: Option<(BTreeMap<u64, String>, usize, usize, u64)>,
+    seqno: u64,
 }
 
 impl EmitState {
@@ -315,8 +366,13 @@ impl EmitState {
         Self {
             target,
             cache: BTreeMap::new(),
-            last_seqno: 0,
-            last_base: 0,
+            render_state: RenderState::new().expect("render state"),
+            rows_iter: RowIterator::new().expect("row iterator"),
+            cells_iter: CellIterator::new().expect("cell iterator"),
+            pin: None,
+            pin_gid: 0,
+            next_gid: 0,
+            vp_base: 0,
             last_max: 0,
             last_cols: 0,
             last_rows: 0,
@@ -325,101 +381,263 @@ impl EmitState {
             sent_initial: false,
             last_keyframe: Instant::now(),
             dirty_since_keyframe: false,
+            saved_primary: None,
+            seqno: 0,
         }
     }
 
     /// Inspect the terminal, update the row cache, and produce the next frame:
     /// a keyframe, a diff, or None when nothing visible changed.
-    fn produce(&mut self, term: &Terminal, keyframe_due: bool) -> Option<serde_json::Value> {
-        let seqno = term.current_seqno();
-        let alt = term.is_alt_screen_active();
-        let size = term.get_size();
-        let (cols, rows) = (size.cols, size.rows);
-        let cursor = term.cursor_pos();
-        let screen = term.screen();
-        let total = screen.scrollback_rows();
-        let base = screen.phys_to_stable_row_index(0);
-        let max = base + total as StableRowIndex;
-        let cursor_now = (
-            total.saturating_sub(rows) + cursor.y.max(0) as usize,
-            cursor.x,
-        );
-
-        // A resize reflows rows and an alt-screen flip swaps line storage;
-        // both invalidate the seqno diff basis, so re-render everything.
-        let forced = !self.sent_initial
-            || alt != self.last_alt
-            || cols != self.last_cols
-            || rows != self.last_rows;
-
-        // Damage since the last emit, limited to rows the client still has.
-        // New rows are the append path; trimmed rows fell off the scrollback.
-        // Rows already in scrollback at the last scan are frozen -- apps
-        // can't address them, and the reflow/alt-flip cases that could move
-        // them force a full re-render above -- so only rows that were in
-        // the viewport at the last emit can have changed. Scanning from the
-        // old viewport top instead of the scrollback base keeps this
-        // O(rows), not O(scrollback); the old top also covers rows damaged
-        // and then scrolled off within one coalesce window.
-        let overlap_end = max.min(self.last_max);
-        let vp_start = (self.last_max - self.last_rows as StableRowIndex).max(base);
-        let damaged: Vec<StableRowIndex> = if !forced && overlap_end > vp_start {
-            screen.get_changed_stable_rows(vp_start..overlap_end, self.last_seqno)
-        } else {
-            Vec::new()
-        };
-        let appended: Vec<StableRowIndex> = if forced {
-            Vec::new()
-        } else {
-            (self.last_max.max(base)..max).collect()
-        };
-        let trimmed: Vec<StableRowIndex> = if forced {
-            Vec::new()
-        } else {
-            (self.last_base..base.min(self.last_max)).collect()
-        };
-
-        let cursor_moved = cursor_now != self.last_cursor;
-        if !forced
-            && !keyframe_due
-            && damaged.is_empty()
-            && appended.is_empty()
-            && trimmed.is_empty()
-            && !cursor_moved
-        {
-            self.last_seqno = seqno;
+    fn produce(
+        &mut self,
+        term: &mut Terminal<'static, 'static>,
+        keyframe_due: bool,
+    ) -> Option<serde_json::Value> {
+        let alt = matches!(term.active_screen(), Ok(Screen::Alternate));
+        let cols = term.cols().unwrap_or(0) as usize;
+        let rows = term.rows().unwrap_or(0) as usize;
+        if cols == 0 || rows == 0 {
             return None;
         }
+        let scrollback_now = if alt {
+            0
+        } else {
+            term.scrollback_rows().unwrap_or(0) as u64
+        };
+        let (cx, cy) = (
+            term.cursor_x().unwrap_or(0) as usize,
+            term.cursor_y().unwrap_or(0) as usize,
+        );
 
-        // Render damaged rows into the cache. A row whose new html matches the
-        // cache byte-for-byte was touched but not visibly changed (a prompt
-        // redraw writing identical cells); drop it from the diff.
-        let mut changed: Vec<StableRowIndex> = Vec::new();
-        if forced {
-            self.cache.clear();
-            let lines = screen.lines_in_phys_range(0..total);
-            for (i, line) in lines.iter().enumerate() {
-                let stable = base + i as StableRowIndex;
-                let mut html = String::with_capacity(64);
-                render_row_into(&mut html, &self.target, line, cols, stable);
-                self.cache.insert(stable, html);
+        let size_changed = cols != self.last_cols || rows != self.last_rows;
+        let flip = alt != self.last_alt;
+
+        // Decide how this tick maps rows to ids. A resize reflows the primary
+        // screen and an alt flip swaps screens; both invalidate the cache and
+        // the pin-derived id basis.
+        let mode = if !self.sent_initial {
+            if alt {
+                Mode::AltEpoch
+            } else {
+                Mode::Rebuild
+            }
+        } else if flip && alt {
+            // Entering the alt screen: park the primary cache. The primary
+            // screen and its scrollback are frozen while alt is active, and
+            // the pin (owned by the primary screen) survives the excursion.
+            self.saved_primary = Some((
+                std::mem::take(&mut self.cache),
+                self.last_cols,
+                self.last_rows,
+                self.vp_base,
+            ));
+            Mode::AltEpoch
+        } else if flip && !alt {
+            match self.saved_primary.take() {
+                Some((saved, scols, srows, svp_base))
+                    if scols == cols && srows == rows && self.pin.is_some() =>
+                {
+                    self.cache = saved;
+                    self.vp_base = svp_base;
+                    Mode::Normal { forced: true }
+                }
+                _ => Mode::Rebuild,
+            }
+        } else if size_changed {
+            if alt {
+                // The alt resize also reflows the parked primary; drop it so
+                // alt exit takes the rebuild path.
+                self.saved_primary = None;
+                Mode::AltEpoch
+            } else {
+                Mode::Rebuild
             }
         } else {
-            self.cache = self.cache.split_off(&base);
-            for &stable in damaged.iter().chain(appended.iter()) {
-                let phys = (stable - base) as usize;
-                let line = &screen.lines_in_phys_range(phys..phys + 1)[0];
-                let mut html = String::with_capacity(64);
-                render_row_into(&mut html, &self.target, line, cols, stable);
-                let fresh = self.cache.get(&stable) != Some(&html);
-                if fresh {
-                    self.cache.insert(stable, html);
-                    if stable < self.last_max {
-                        changed.push(stable);
+            Mode::Normal { forced: false }
+        };
+
+        // Resolve the viewport base id and, for primary steady state, the
+        // scroll delta since the last tick from the pin.
+        let mut forced = false;
+        let mut trimmed: Vec<u64> = Vec::new();
+        let mut changed: Vec<u64> = Vec::new();
+        let mut appended: Vec<u64> = Vec::new();
+
+        let mode = match mode {
+            Mode::Normal { forced: f } if !alt => {
+                let pinned = self
+                    .pin
+                    .as_ref()
+                    .and_then(|p| p.point(PointSpace::Screen).ok().flatten());
+                match pinned {
+                    Some(p) => {
+                        // Rows above the pin are exactly the history rows we
+                        // assigned contiguous ids to, so the pin's screen-space
+                        // y converts directly into the id of screen row 0.
+                        let row0_gid = self.pin_gid.saturating_sub(p.y as u64);
+                        let new_base = (row0_gid + scrollback_now).max(self.vp_base);
+                        self.vp_base = new_base;
+                        forced = f;
+                        Mode::Normal { forced: f }
                     }
+                    // The pinned row was pruned or lost: the odometer broke,
+                    // re-derive everything under a fresh id epoch.
+                    None => Mode::Rebuild,
+                }
+            }
+            m => m,
+        };
+
+        match mode {
+            Mode::Normal { .. } => {}
+            Mode::Rebuild => {
+                forced = true;
+                self.cache.clear();
+                let base = self.next_gid;
+                self.vp_base = base + scrollback_now;
+                // Re-read the whole scrollback through grid refs. This is the
+                // slow path (per-cell FFI), but it only runs on startup,
+                // resize, and pin loss.
+                for h in 0..scrollback_now {
+                    let mut html = String::with_capacity(64);
+                    render_history_row_into(&mut html, &self.target, term, base + h, h, cols);
+                    self.cache.insert(base + h, html);
+                }
+                self.last_max = self.vp_base; // viewport rows re-render as new
+            }
+            Mode::AltEpoch => {
+                forced = true;
+                self.cache.clear();
+                self.vp_base = self.next_gid;
+                self.last_max = self.vp_base;
+            }
+        }
+
+        let row0_gid = self.vp_base.saturating_sub(scrollback_now);
+
+        if !alt && !forced {
+            // Rows that left the viewport since the last tick: rows the last
+            // snapshot rendered may have been touched again before scrolling
+            // off, and rows that flew through the viewport inside one
+            // coalesce window were never snapshot at all. Re-read both out
+            // of scrollback via grid refs and byte-compare against the cache.
+            let old_vp_start = self.last_max.saturating_sub(self.last_rows as u64);
+            let start = old_vp_start.max(row0_gid);
+            for gid in start..self.vp_base {
+                let mut html = String::with_capacity(64);
+                render_history_row_into(&mut html, &self.target, term, gid, gid - row0_gid, cols);
+                if self.cache.get(&gid) != Some(&html) {
+                    self.cache.insert(gid, html);
+                    if gid < self.last_max {
+                        changed.push(gid);
+                    } else {
+                        appended.push(gid);
+                    }
+                } else if gid >= self.last_max {
+                    appended.push(gid);
+                }
+            }
+            // Rows ghostty pruned off the scrollback fall off the client too.
+            let cache_first = self.cache.keys().next().copied().unwrap_or(row0_gid);
+            for gid in cache_first..row0_gid.min(self.vp_base) {
+                if self.cache.remove(&gid).is_some() {
+                    trimmed.push(gid);
                 }
             }
         }
+
+        // Render viewport rows from the render-state snapshot. Dirty flags
+        // are consumed here; a re-rendered row whose html matches the cache
+        // byte-for-byte was touched but not visibly changed, so it drops out
+        // of the diff.
+        {
+            let snapshot = self
+                .render_state
+                .update(&*term)
+                .expect("render state update");
+            let full = matches!(snapshot.dirty(), Ok(Dirty::Full));
+            let mut row_iter = self.rows_iter.update(&snapshot).expect("row iteration");
+            let mut y: u64 = 0;
+            let mut text = String::with_capacity(16);
+            while let Some(row) = row_iter.next() {
+                let gid = self.vp_base + y;
+                let is_new = gid >= self.last_max;
+                let dirty = row.dirty().unwrap_or(true);
+                if forced || full || is_new || dirty {
+                    let mut html = String::with_capacity(64);
+                    {
+                        let mut rb = RowBuilder::begin(&mut html, &self.target, gid);
+                        let mut cell_iter =
+                            self.cells_iter.update(row).expect("cell iteration");
+                        let mut x = 0usize;
+                        while let Some(cell) = cell_iter.next() {
+                            if x >= cols {
+                                break;
+                            }
+                            x += 1;
+                            let raw = match cell.raw_cell() {
+                                Ok(c) => c,
+                                Err(_) => continue,
+                            };
+                            match raw.wide() {
+                                Ok(CellWide::SpacerTail) | Ok(CellWide::SpacerHead) => continue,
+                                Ok(CellWide::Wide) => {
+                                    text.clear();
+                                    let _ = cell.graphemes_utf8(&mut text);
+                                    let attrs = attrs_for(&cell.style().ok(), &raw);
+                                    rb.cell(if text.is_empty() { " " } else { &text }, 2, &attrs);
+                                    continue;
+                                }
+                                _ => {}
+                            }
+                            let styled = cell.has_styling().unwrap_or(false);
+                            let attrs = if styled {
+                                attrs_for(&cell.style().ok(), &raw)
+                            } else {
+                                attrs_for(&None, &raw)
+                            };
+                            text.clear();
+                            let _ = cell.graphemes_utf8(&mut text);
+                            rb.cell(if text.is_empty() { " " } else { &text }, 1, &attrs);
+                        }
+                        rb.finish();
+                    }
+                    let fresh = self.cache.get(&gid) != Some(&html);
+                    if fresh {
+                        self.cache.insert(gid, html);
+                        if is_new {
+                            appended.push(gid);
+                        } else {
+                            changed.push(gid);
+                        }
+                    } else if is_new {
+                        appended.push(gid);
+                    }
+                }
+                let _ = row.set_dirty(false);
+                y += 1;
+            }
+            let _ = snapshot.set_dirty(Dirty::Clean);
+        }
+
+        // Re-pin the odometer at the current active top-left. The pin lives
+        // on the primary screen; while alt is active it must stay where it
+        // is, or it would re-resolve against the alt screen.
+        if !alt {
+            let p = Point::Active(PointCoordinate { x: 0, y: 0 });
+            match self.pin.as_mut() {
+                Some(pin) => {
+                    let _ = pin.set(term, p);
+                }
+                None => self.pin = term.track_grid_ref(p).ok(),
+            }
+            self.pin_gid = self.vp_base;
+        }
+
+        let max = self.vp_base + rows as u64;
+        let total = self.cache.len();
+        let cursor_now = (total.saturating_sub(rows) + cy, cx);
+        let cursor_moved = cursor_now != self.last_cursor;
 
         if !forced
             && !keyframe_due
@@ -428,9 +646,13 @@ impl EmitState {
             && trimmed.is_empty()
             && !cursor_moved
         {
-            self.last_seqno = seqno;
+            self.last_max = max;
+            self.next_gid = self.next_gid.max(max);
             return None;
         }
+
+        self.seqno += 1;
+        let seqno = self.seqno;
 
         // A burst that touched most rows is cheaper as a keyframe than as a
         // stack of row patches, and it doubles as the healing checkpoint.
@@ -453,15 +675,15 @@ impl EmitState {
             serde_json::json!({"t":"screen","seqno":seqno,"cols":cols,"rows":rows,"html":html})
         } else {
             let mut patch = String::new();
-            for stable in &changed {
-                patch.push_str(&self.cache[stable]);
+            for gid in &changed {
+                patch.push_str(&self.cache[gid]);
             }
             if cursor_moved {
                 render_cursor_into(&mut patch, &self.target, cursor_now.0, cursor_now.1);
             }
             let mut append = String::new();
-            for stable in &appended {
-                append.push_str(&self.cache[stable]);
+            for gid in &appended {
+                append.push_str(&self.cache[gid]);
             }
             let trim: Vec<String> = trimmed
                 .iter()
@@ -474,9 +696,8 @@ impl EmitState {
             })
         };
 
-        self.last_seqno = seqno;
-        self.last_base = base;
         self.last_max = max;
+        self.next_gid = self.next_gid.max(max);
         self.last_cols = cols;
         self.last_rows = rows;
         self.last_alt = alt;
@@ -497,18 +718,71 @@ fn render_cursor_into(out: &mut String, target: &str, row: usize, col: usize) {
     );
 }
 
-/// Equivalence over exactly the attributes the renderer maps to output.
-/// Deliberately ignores non-rendered bits (blink, hyperlinks, wrap) so runs
-/// don't split on invisible differences.
-fn attrs_equiv(a: &CellAttributes, b: &CellAttributes) -> bool {
-    a.intensity() == b.intensity()
-        && a.italic() == b.italic()
-        && a.underline() == b.underline()
-        && a.invisible() == b.invisible()
-        && a.strikethrough() == b.strikethrough()
-        && a.reverse() == b.reverse()
-        && a.foreground() == b.foreground()
-        && a.background() == b.background()
+/// Exactly the attributes the renderer maps to output, so runs don't split
+/// on invisible differences (blink, hyperlinks, wrap state).
+#[derive(Clone, PartialEq)]
+struct Attrs {
+    bold: bool,
+    faint: bool,
+    italic: bool,
+    underline: bool,
+    invisible: bool,
+    strikethrough: bool,
+    inverse: bool,
+    fg: StyleColor,
+    bg: StyleColor,
+}
+
+impl Default for Attrs {
+    fn default() -> Self {
+        Self {
+            bold: false,
+            faint: false,
+            italic: false,
+            underline: false,
+            invisible: false,
+            strikethrough: false,
+            inverse: false,
+            fg: StyleColor::None,
+            bg: StyleColor::None,
+        }
+    }
+}
+
+/// Fold a ghostty style plus the cell's content-tag background (an erased
+/// cell carries its bg color in the cell, not the style) into render attrs.
+fn attrs_for(
+    style: &Option<libghostty_vt::style::Style>,
+    raw: &libghostty_vt::screen::Cell,
+) -> Attrs {
+    let mut a = match style {
+        Some(s) => Attrs {
+            bold: s.bold,
+            faint: s.faint,
+            italic: s.italic,
+            underline: !matches!(s.underline, Underline::None),
+            invisible: s.invisible,
+            strikethrough: s.strikethrough,
+            inverse: s.inverse,
+            fg: s.fg_color,
+            bg: s.bg_color,
+        },
+        None => Attrs::default(),
+    };
+    match raw.content_tag() {
+        Ok(CellContentTag::BgColorPalette) => {
+            if let Ok(i) = raw.bg_color_palette() {
+                a.bg = StyleColor::Palette(i);
+            }
+        }
+        Ok(CellContentTag::BgColorRgb) => {
+            if let Ok(c) = raw.bg_color_rgb() {
+                a.bg = StyleColor::Rgb(c);
+            }
+        }
+        _ => {}
+    }
+    a
 }
 
 fn palette_to_rgb(i: u8) -> (u8, u8, u8) {
@@ -542,64 +816,61 @@ fn palette_to_rgb(i: u8) -> (u8, u8, u8) {
     (l, l, l)
 }
 
-fn append_color_inline(out: &mut String, prop: &str, c: ColorAttribute, default_var: &str) {
+fn append_color_inline(out: &mut String, prop: &str, c: StyleColor, default_var: &str) {
     match c {
-        ColorAttribute::Default => {
+        StyleColor::None => {
             if !default_var.is_empty() {
                 let _ = write!(out, "{prop}:var({default_var});");
             }
         }
-        ColorAttribute::PaletteIndex(i) if i < 16 => {
+        StyleColor::Palette(PaletteIndex(i)) if i < 16 => {
             let _ = write!(out, "{prop}:var(--c{i});");
         }
-        ColorAttribute::PaletteIndex(i) => {
+        StyleColor::Palette(PaletteIndex(i)) => {
             let (r, g, b) = palette_to_rgb(i);
             let _ = write!(out, "{prop}:#{r:02x}{g:02x}{b:02x};");
         }
-        ColorAttribute::TrueColorWithDefaultFallback(rgb)
-        | ColorAttribute::TrueColorWithPaletteFallback(rgb, _) => {
-            let r = (rgb.0 * 255.0).round() as u8;
-            let g = (rgb.1 * 255.0).round() as u8;
-            let b = (rgb.2 * 255.0).round() as u8;
-            let _ = write!(out, "{prop}:#{r:02x}{g:02x}{b:02x};");
+        StyleColor::Rgb(c) => {
+            let _ = write!(out, "{prop}:#{:02x}{:02x}{:02x};", c.r, c.g, c.b);
         }
     }
 }
 
-fn cell_class_and_style(attrs: &CellAttributes) -> (String, String) {
+fn cell_class_and_style(attrs: &Attrs) -> (String, String) {
     let mut classes = String::new();
     let mut style = String::new();
-    match attrs.intensity() {
-        Intensity::Bold => classes.push_str(" sb"),
-        Intensity::Half => classes.push_str(" sd"),
-        Intensity::Normal => {}
+    if attrs.bold {
+        classes.push_str(" sb");
     }
-    if attrs.italic() {
+    if attrs.faint {
+        classes.push_str(" sd");
+    }
+    if attrs.italic {
         classes.push_str(" si");
     }
-    if !matches!(attrs.underline(), Underline::None) {
+    if attrs.underline {
         classes.push_str(" su");
     }
-    if attrs.invisible() {
+    if attrs.invisible {
         classes.push_str(" sx");
     }
-    if attrs.strikethrough() {
+    if attrs.strikethrough {
         classes.push_str(" ss");
     }
-    if attrs.reverse() {
-        append_color_inline(&mut style, "color", attrs.background(), "--term-bg");
-        append_color_inline(&mut style, "background", attrs.foreground(), "--term-fg");
+    if attrs.inverse {
+        append_color_inline(&mut style, "color", attrs.bg, "--term-bg");
+        append_color_inline(&mut style, "background", attrs.fg, "--term-fg");
     } else {
-        match attrs.foreground() {
-            ColorAttribute::Default => {}
-            ColorAttribute::PaletteIndex(i) if i < 16 => {
+        match attrs.fg {
+            StyleColor::None => {}
+            StyleColor::Palette(PaletteIndex(i)) if i < 16 => {
                 let _ = write!(classes, " f{i}");
             }
             other => append_color_inline(&mut style, "color", other, ""),
         }
-        match attrs.background() {
-            ColorAttribute::Default => {}
-            ColorAttribute::PaletteIndex(i) if i < 16 => {
+        match attrs.bg {
+            StyleColor::None => {}
+            StyleColor::Palette(PaletteIndex(i)) if i < 16 => {
                 let _ = write!(classes, " b{i}");
             }
             other => append_color_inline(&mut style, "background", other, ""),
@@ -624,92 +895,148 @@ fn cell_needs_box(glyph: &str, width: usize) -> bool {
     width != 1 || glyph.chars().count() > 1
 }
 
-/// One streaming pass over the row's cells: runs of equivalent attrs share one
-/// span, attrs are cloned only at run boundaries, and no per-cell allocation
-/// happens. Default-attr blanks are buffered so trailing ones are dropped --
+/// One streaming pass over a row's cells: runs of equal attrs share one span
+/// and default-attr blanks are buffered so trailing ones are dropped --
 /// `white-space:pre` plus `.row{min-height}` keep the geometry without them.
-fn render_row_into(
-    out: &mut String,
-    target: &str,
-    line: &wezterm_term::Line,
-    cols: usize,
-    stable: StableRowIndex,
-) {
-    let _ = write!(out, "<div class=\"row\" id=\"{target}-r-{stable}\">");
-    let default = CellAttributes::default();
-    let mut expected = 0usize;
-    let mut pending_blanks = 0usize;
-    let mut span_open = false;
-    let mut run_attrs: Option<CellAttributes> = None;
+struct RowBuilder<'a> {
+    out: &'a mut String,
+    pending_blanks: usize,
+    span_open: bool,
+    run: Option<Attrs>,
+}
 
-    for cell in line.visible_cells() {
-        let col = cell.cell_index();
-        if col >= cols {
-            break;
+impl<'a> RowBuilder<'a> {
+    fn begin(out: &'a mut String, target: &str, gid: u64) -> Self {
+        let _ = write!(out, "<div class=\"row\" id=\"{target}-r-{gid}\">");
+        Self {
+            out,
+            pending_blanks: 0,
+            span_open: false,
+            run: None,
         }
-        if col < expected {
-            continue;
-        }
-        pending_blanks += col - expected;
-        let width = cell.width().max(1);
-        expected = col + width;
-        let s = cell.str();
-        let attrs = cell.attrs();
+    }
 
-        let plain = attrs_equiv(attrs, &default);
-        if plain && width == 1 && (s == " " || s.is_empty()) {
-            pending_blanks += 1;
-            continue;
+    fn close_span(&mut self) {
+        if self.span_open {
+            self.out.push_str("</span>");
+            self.span_open = false;
+            self.run = None;
         }
-        if pending_blanks > 0 {
-            if span_open {
-                out.push_str("</span>");
-                span_open = false;
-                run_attrs = None;
-            }
-            out.extend(std::iter::repeat(' ').take(pending_blanks));
-            pending_blanks = 0;
+    }
+
+    fn cell(&mut self, glyph: &str, width: usize, attrs: &Attrs) {
+        let plain = *attrs == Attrs::default();
+        if plain && width == 1 && (glyph == " " || glyph.is_empty()) {
+            self.pending_blanks += 1;
+            return;
+        }
+        if self.pending_blanks > 0 {
+            self.close_span();
+            let n = self.pending_blanks;
+            self.out.extend(std::iter::repeat(' ').take(n));
+            self.pending_blanks = 0;
         }
         if plain {
-            if span_open {
-                out.push_str("</span>");
-                span_open = false;
-                run_attrs = None;
-            }
+            self.close_span();
         } else {
-            let same = run_attrs.as_ref().is_some_and(|r| attrs_equiv(r, attrs));
+            let same = self.run.as_ref().is_some_and(|r| r == attrs);
             if !same {
-                if span_open {
-                    out.push_str("</span>");
+                if self.span_open {
+                    self.out.push_str("</span>");
                 }
                 let (classes, style) = cell_class_and_style(attrs);
                 if classes.is_empty() && style.is_empty() {
-                    span_open = false;
-                    run_attrs = None;
+                    self.span_open = false;
+                    self.run = None;
                 } else {
-                    out.push_str("<span class=\"c");
-                    out.push_str(&classes);
-                    out.push('"');
+                    self.out.push_str("<span class=\"c");
+                    self.out.push_str(&classes);
+                    self.out.push('"');
                     if !style.is_empty() {
-                        let _ = write!(out, " style=\"{style}\"");
+                        let _ = write!(self.out, " style=\"{style}\"");
                     }
-                    out.push('>');
-                    span_open = true;
-                    run_attrs = Some(attrs.clone());
+                    self.out.push('>');
+                    self.span_open = true;
+                    self.run = Some(attrs.clone());
                 }
             }
         }
-        let glyph = if s.is_empty() { " " } else { s };
+        let glyph = if glyph.is_empty() { " " } else { glyph };
         if cell_needs_box(glyph, width) {
-            let _ = write!(out, "<span class=\"wc\" style=\"--w:{width}\">");
-            html_escape(glyph, out);
-            out.push_str("</span>");
+            let _ = write!(self.out, "<span class=\"wc\" style=\"--w:{width}\">");
+            html_escape(glyph, self.out);
+            self.out.push_str("</span>");
         } else {
-            html_escape(glyph, out);
+            html_escape(glyph, self.out);
         }
     }
-    if span_open {
-        out.push_str("</span>");
+
+    fn finish(mut self) {
+        self.close_span();
+        self.out.push_str("</div>");
     }
-    out.push_str("</div>");
+}
+
+/// Render one scrollback row by walking its cells through grid refs. This is
+/// per-cell FFI, so it is reserved for rows the viewport snapshot can't see:
+/// rows that already scrolled off, and full-scrollback rebuilds.
+fn render_history_row_into(
+    out: &mut String,
+    target: &str,
+    term: &Terminal,
+    gid: u64,
+    screen_y: u64,
+    cols: usize,
+) {
+    let mut rb = RowBuilder::begin(out, target, gid);
+    let mut charbuf = [char::MAX; 32];
+    let mut text = String::with_capacity(8);
+    let mut x = 0usize;
+    while x < cols {
+        let gr = match term.grid_ref(Point::Screen(PointCoordinate {
+            x: x as u16,
+            y: screen_y as u32,
+        })) {
+            Ok(g) => g,
+            Err(_) => break,
+        };
+        let raw = match gr.cell() {
+            Ok(c) => c,
+            Err(_) => break,
+        };
+        let wide = raw.wide().unwrap_or(CellWide::Narrow);
+        if matches!(wide, CellWide::SpacerTail | CellWide::SpacerHead) {
+            x += 1;
+            continue;
+        }
+        let width = if matches!(wide, CellWide::Wide) { 2 } else { 1 };
+        text.clear();
+        match raw.content_tag() {
+            Ok(CellContentTag::CodepointGrapheme) => {
+                if let Ok(n) = gr.graphemes(&mut charbuf) {
+                    for c in &charbuf[..n] {
+                        text.push(*c);
+                    }
+                }
+            }
+            _ => {
+                if let Ok(cp) = raw.codepoint() {
+                    if cp != 0 {
+                        if let Some(c) = char::from_u32(cp) {
+                            text.push(c);
+                        }
+                    }
+                }
+            }
+        }
+        let style = if raw.has_styling().unwrap_or(false) {
+            gr.style().ok()
+        } else {
+            None
+        };
+        let attrs = attrs_for(&style, &raw);
+        rb.cell(if text.is_empty() { " " } else { &text }, width, &attrs);
+        x += 1;
+    }
+    rb.finish();
 }
