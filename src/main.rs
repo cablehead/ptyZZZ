@@ -215,6 +215,10 @@ fn main() {
     let out = std::io::stdout();
     let mut state = EmitState::new(target);
     let mut last_gen = u64::MAX; // != 0 so the first pass emits immediately
+    // Cost of building+writing the previous frame; the coalesce sleep is
+    // shortened by this much so continuous output emits on a steady
+    // ~coalesce cadence instead of coalesce + frame cost.
+    let mut frame_cost = Duration::ZERO;
     loop {
         {
             let (lock, cv) = &*dirty;
@@ -237,13 +241,14 @@ fn main() {
             last_gen = *g;
         }
         if !done.load(Ordering::SeqCst) {
-            std::thread::sleep(coalesce);
+            std::thread::sleep(coalesce.saturating_sub(frame_cost));
             let (lock, _) = &*dirty;
             last_gen = *lock.lock().unwrap();
         }
 
         let keyframe_due =
             state.dirty_since_keyframe && state.last_keyframe.elapsed() >= keyframe_interval;
+        let started = Instant::now();
         let frame = {
             let t = term.lock().unwrap();
             state.produce(&t, keyframe_due)
@@ -257,6 +262,7 @@ fn main() {
                 break;
             }
         }
+        frame_cost = started.elapsed();
 
         if done.load(Ordering::SeqCst) {
             break;
