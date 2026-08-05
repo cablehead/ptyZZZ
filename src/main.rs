@@ -430,7 +430,7 @@ struct EmitState {
     last_cols: usize,
     last_rows: usize,
     last_alt: bool,
-    last_cursor: (usize, usize),
+    last_cursor: (usize, usize, bool),
     sent_initial: bool,
     last_keyframe: Instant,
     dirty_since_keyframe: bool,
@@ -449,7 +449,7 @@ impl EmitState {
             last_cols: 0,
             last_rows: 0,
             last_alt: false,
-            last_cursor: (usize::MAX, usize::MAX),
+            last_cursor: (usize::MAX, usize::MAX, true),
             sent_initial: false,
             last_keyframe: Instant::now(),
             dirty_since_keyframe: false,
@@ -479,6 +479,7 @@ impl EmitState {
         let cursor_now = (
             total.saturating_sub(rows) + cursor.y.max(0) as usize,
             cursor.x,
+            cursor.visibility == wezterm_surface::CursorVisibility::Visible,
         );
 
         // A resize reflows rows and an alt-screen flip swaps line storage;
@@ -579,7 +580,7 @@ impl EmitState {
                 "<div id=\"{}\" data-cols=\"{cols}\" data-rows=\"{rows}\">",
                 self.target
             );
-            render_cursor_into(&mut html, &self.target, cursor_now.0, cursor_now.1);
+            render_cursor_into(&mut html, &self.target, cursor_now.0, cursor_now.1, cursor_now.2);
             for row in self.cache.values() {
                 html.push_str(row);
             }
@@ -593,7 +594,7 @@ impl EmitState {
                 patch.push_str(&self.cache[stable]);
             }
             if cursor_moved {
-                render_cursor_into(&mut patch, &self.target, cursor_now.0, cursor_now.1);
+                render_cursor_into(&mut patch, &self.target, cursor_now.0, cursor_now.1, cursor_now.2);
             }
             let mut append = String::new();
             for stable in &appended {
@@ -712,10 +713,13 @@ fn scan_hyperlinks(term: &mut Terminal, since: usize, lo: Option<StableRowIndex>
 
 /// The cursor is its own self-identified overlay, positioned purely by CSS
 /// vars, so a cursor move patches ~90 bytes instead of touching any row.
-fn render_cursor_into(out: &mut String, target: &str, row: usize, col: usize) {
+/// DECTCEM hidden (TUIs hide the cursor while repainting) renders as
+/// display:none so the overlay does not flash around the grid.
+fn render_cursor_into(out: &mut String, target: &str, row: usize, col: usize, visible: bool) {
+    let display = if visible { "" } else { ";display:none" };
     let _ = write!(
         out,
-        "<div class=\"cursor\" id=\"{target}-cursor\" style=\"--cursor-row:{row};--cursor-col:{col}\"></div>"
+        "<div class=\"cursor\" id=\"{target}-cursor\" style=\"--cursor-row:{row};--cursor-col:{col}{display}\"></div>"
     );
 }
 
