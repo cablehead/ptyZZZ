@@ -105,7 +105,7 @@ const TMPL = r#'<!doctype html>
   .pane+.pane{border-left:1px solid #444}
   .pane.focused .label{color:#fff;background:#333}
   .label{position:sticky;top:0;z-index:1;font-size:11px;color:#888;background:#1a1a1a;padding:2px 8px}
-  [id^="grid-"]{white-space:pre;padding:8px;position:relative;box-sizing:border-box}
+  .pane>[id^="grid-"]{white-space:pre;padding:8px;position:relative;box-sizing:border-box}
   .row{min-height:1.2em}
   .pane a{color:inherit;text-decoration:underline}
   .cursor{position:absolute;top:calc(8px + var(--cursor-row)*1.2em);left:calc(8px + var(--cursor-col)*1ch);
