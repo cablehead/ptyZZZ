@@ -65,7 +65,7 @@ if ($HTTP_NU.store? | default null) != null and ($HTTP_NU.services? | default fa
   register-service "xs.service.pty.create" ($closure | str replace "PTYBIN" $PTYZZZ)
 }
 
-const PAGE = "<!doctype html>
+const PAGE = r#'<!doctype html>
 <html><head><meta charset=utf-8>
 <script type=module src=DATASTAR></script>
 <style>
@@ -87,29 +87,94 @@ const PAGE = "<!doctype html>
   .b1{background:var(--c1)}.b2{background:var(--c2)}.b3{background:var(--c3)}.b4{background:var(--c4)}
   .b5{background:var(--c5)}.b6{background:var(--c6)}.b7{background:var(--c7)}
 </style></head>
-<body data-init=\"@get('/sse')\">
+<body data-init="@get('/sse')">
   <div id=grid>connecting...</div>
   <script type=module>
-    addEventListener('keydown', e => {
-      if (e.metaKey||e.ctrlKey&&e.key.length>1) return;
-      let b = e.key;
-      if (b==='Enter') b='\\n'; else if (b==='Backspace') b='\\x7f';
-      else if (b==='Tab') b='\\t'; else if (b==='Escape') b='\\x1b';
-      else if (b.length!==1) return;
-      e.preventDefault();
-      fetch('/input',{method:'POST',body:b});
+    // Map a KeyboardEvent to the bytes a pty expects; null = not ours.
+    // Lifted from stacks2099 key-buffer.js (xterm/vt100 semantics).
+    function keyToBytes(ev) {
+      if (["Shift","Control","Alt","Meta","CapsLock"].includes(ev.key)) return null;
+      // xterm modifier parameter: 1 + shift + 2*alt + 4*ctrl + 8*meta;
+      // 1 means unmodified, in which case the parameter is omitted.
+      const mod = 1 + (ev.shiftKey?1:0) + (ev.altKey?2:0) + (ev.ctrlKey?4:0) + (ev.metaKey?8:0);
+      const CSI = {ArrowUp:"A",ArrowDown:"B",ArrowRight:"C",ArrowLeft:"D",Home:"H",End:"F"};
+      const TILDE = {PageUp:5,PageDown:6,Delete:3,Insert:2};
+      if (CSI[ev.key]) return mod===1 ? "\x1b["+CSI[ev.key] : "\x1b[1;"+mod+CSI[ev.key];
+      if (TILDE[ev.key] !== undefined) return mod===1 ? "\x1b["+TILDE[ev.key]+"~" : "\x1b["+TILDE[ev.key]+";"+mod+"~";
+      if (ev.key === "Backspace") {
+        if (ev.altKey && !ev.ctrlKey && !ev.metaKey) return "\x1b\x7f"; // meta-DEL: delete word
+        if (ev.ctrlKey && !ev.altKey && !ev.metaKey) return "\x17";     // ^W: delete word back
+        return "\x7f";
+      }
+      if (ev.key === "Enter") return "\r";
+      if (ev.key === "Tab") return "\t";
+      if (ev.key === "Escape") return "\x1b";
+      if (ev.key.length === 1) {
+        const ch = ev.key;
+        if (ev.ctrlKey && !ev.altKey && !ev.metaKey) {
+          const lower = ch.toLowerCase();
+          if (lower >= "a" && lower <= "z") return String.fromCharCode(lower.charCodeAt(0) - 0x60);
+          const PUNCT = {"@":0,"[":27,"\\":28,"]":29,"^":30,"_":31," ":0};
+          if (ch in PUNCT) return String.fromCharCode(PUNCT[ch]);
+          return null;
+        }
+        if (ev.altKey && !ev.ctrlKey && !ev.metaKey) {
+          // Option as compose (non-US layouts) delivers a non-letter glyph:
+          // send it literally. A true Alt+letter chord is ESC-prefixed for
+          // readline Meta.
+          const codeLetter = /^Key([A-Z])$/.exec(ev.code)?.[1]?.toLowerCase();
+          return (codeLetter && ch.toLowerCase() === codeLetter) ? "\x1b"+ch : ch;
+        }
+        if (ev.metaKey) return null; // Cmd+x belongs to the browser/OS
+        return ch;
+      }
+      return null; // F1-F12 etc: not handled
+    }
+    const send = b => fetch("/input", {method:"POST",
+      headers:{"content-type":"application/octet-stream"}, body:b});
+    addEventListener("keydown", ev => {
+      // Composing keydowns (dead keys, IME) are provisional; skip them.
+      if (ev.isComposing || ev.keyCode === 229) return;
+      // Leave keys aimed at real form fields alone.
+      const t = ev.target, tag = t && t.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (t && t.isContentEditable)) return;
+      // Selection beats SIGINT: Ctrl+C with a selection copies.
+      if (ev.ctrlKey && !ev.altKey && !ev.metaKey && ev.key === "c") {
+        const sel = getSelection().toString();
+        if (sel) { navigator.clipboard.writeText(sel).catch(()=>{}); ev.preventDefault(); return; }
+      }
+      const b = keyToBytes(ev);
+      if (b === null) return;
+      ev.preventDefault();
+      send(b);
+    });
+    addEventListener("paste", ev => {
+      const text = ev.clipboardData?.getData("text");
+      if (!text) return;
+      ev.preventDefault();
+      send(text);
+    });
+    document.addEventListener("copy", ev => {
+      // Rows are space-padded to full width; strip trailing whitespace
+      // per line so copies match what a terminal emulator would yield.
+      const sel = getSelection(); if (!sel) return;
+      const text = sel.toString(); if (!text) return;
+      const trimmed = text.split("\n").map(l => l.replace(/[ \t]+$/,"")).join("\n");
+      if (trimmed === text) return;
+      ev.clipboardData?.setData("text/plain", trimmed);
+      ev.preventDefault();
     });
     // follow the tail like a terminal, but let the user scroll back through
     // history undisturbed; resume following when they return to the bottom
     let follow = true;
-    addEventListener('scroll', () => {
+    addEventListener("scroll", () => {
       follow = innerHeight + scrollY >= document.body.scrollHeight - 48;
     });
     new MutationObserver(() => {
       if (follow) scrollTo(0, document.body.scrollHeight);
     }).observe(document.body, {childList: true, subtree: true});
   </script>
-</body></html>"
+</body></html>'#
 
 {|req|
   dispatch $req [
