@@ -43,7 +43,7 @@ type Term = Crosswords<PtyProxy>;
 /// Which emulation engine this build carries; exported to the child as
 /// PTYZZZ_ENGINE so a session can identify its backend (the rio-vt branch
 /// sets this to "rio-vt").
-const ENGINE: &str = "wezterm-term";
+const ENGINE: &str = "rio-vt";
 
 #[derive(Parser)]
 #[command(about = "own one pty, speak JSONL on stdio")]
