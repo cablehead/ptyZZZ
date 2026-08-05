@@ -11,17 +11,20 @@
 use std::collections::BTreeMap;
 use std::io::{BufRead, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use clap::Parser;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::Deserialize;
 use std::fmt::Write as _;
+use wezterm_surface::hyperlink::{
+    Rule, CLOSING_PARENTHESIS_HYPERLINK_PATTERN, GENERIC_HYPERLINK_PATTERN,
+};
 use wezterm_term::{
     color::{ColorAttribute, ColorPalette},
-    CellAttributes, Intensity, StableRowIndex, Terminal, TerminalConfiguration, TerminalSize,
-    Underline,
+    CellAttributes, Intensity, Line, StableRowIndex, Terminal, TerminalConfiguration,
+    TerminalSize, Underline,
 };
 
 #[derive(Parser)]
@@ -257,8 +260,8 @@ fn main() {
             state.dirty_since_keyframe && state.last_keyframe.elapsed() >= keyframe_interval;
         let started = Instant::now();
         let frame = {
-            let t = term.lock().unwrap();
-            state.produce(&t, keyframe_due)
+            let mut t = term.lock().unwrap();
+            state.produce(&mut t, keyframe_due)
         };
         if let Some(v) = frame {
             let mut w = out.lock();
@@ -308,6 +311,8 @@ struct EmitState {
     sent_initial: bool,
     last_keyframe: Instant,
     dirty_since_keyframe: bool,
+    /// seqno of the last implicit-hyperlink scan
+    scan_seqno: usize,
 }
 
 impl EmitState {
@@ -325,12 +330,20 @@ impl EmitState {
             sent_initial: false,
             last_keyframe: Instant::now(),
             dirty_since_keyframe: false,
+            scan_seqno: 0,
         }
     }
 
     /// Inspect the terminal, update the row cache, and produce the next frame:
     /// a keyframe, a diff, or None when nothing visible changed.
-    fn produce(&mut self, term: &Terminal, keyframe_due: bool) -> Option<serde_json::Value> {
+    fn produce(&mut self, term: &mut Terminal, keyframe_due: bool) -> Option<serde_json::Value> {
+        // Implicit-link scan first (it mutates cell attrs on changed lines),
+        // clamped to the rows that can still change.
+        let scan_lo = self
+            .sent_initial
+            .then(|| self.last_max - self.last_rows as StableRowIndex);
+        self.scan_seqno = scan_hyperlinks(term, self.scan_seqno, scan_lo);
+
         let seqno = term.current_seqno();
         let alt = term.is_alt_screen_active();
         let size = term.get_size();
@@ -486,6 +499,92 @@ impl EmitState {
     }
 }
 
+// --- hyperlinks: engine-agnostic policy --------------------------------------
+// safe_href and the anchor emission in render_row_into work on plain strings
+// and know nothing about the emulator; only the scan below is wezterm-bound.
+
+/// Return the URI to use as an `href`, or None if its scheme isn't one we'll
+/// make clickable. OSC 8 can carry any scheme (including `javascript:` and
+/// `data:`), so gate every link through this allowlist before it reaches the
+/// DOM. Our implicit rules only ever emit http/https/mailto anyway.
+fn safe_href(uri: &str) -> Option<&str> {
+    let u = uri.trim();
+    let ok = ["http://", "https://", "mailto:"]
+        .iter()
+        .any(|p| u.len() >= p.len() && u.as_bytes()[..p.len()].eq_ignore_ascii_case(p.as_bytes()));
+    ok.then_some(u)
+}
+
+// --- hyperlinks: wezterm implicit-URL scan -----------------------------------
+
+/// URL detection rules for bare (non-OSC-8) text. This is wezterm's own
+/// `default_hyperlink_rules` set, rebuilt from the patterns wezterm-surface
+/// exports. Compiled once.
+///
+/// The bracket rules link the URL without its surrounding `()`/`[]`/`<>`
+/// (capture group 1 is the highlighted range). The generic pattern ends in
+/// `[_/a-zA-Z0-9-]`, so trailing prose punctuation (`.`, `,`, `)`) is left
+/// out of the link while a real trailing `/` or `-` is kept -- and it has no
+/// TLD requirement, so `http://localhost:8080` links too.
+fn hyperlink_rules() -> &'static [Rule] {
+    static RULES: OnceLock<Vec<Rule>> = OnceLock::new();
+    RULES
+        .get_or_init(|| {
+            vec![
+                // URLs wrapped in brackets: link the inner URL, not the bracket.
+                Rule::with_highlight(r"\((\w+://\S+)\)", "$1", 1).unwrap(),
+                Rule::with_highlight(r"\[(\w+://\S+)\]", "$1", 1).unwrap(),
+                Rule::with_highlight(r"<(\w+://\S+)>", "$1", 1).unwrap(),
+                // Bare URLs: balanced closing paren, then the generic form.
+                Rule::new(CLOSING_PARENTHESIS_HYPERLINK_PATTERN, "$0").unwrap(),
+                Rule::new(GENERIC_HYPERLINK_PATTERN, "$0").unwrap(),
+                // Implicit mailto.
+                Rule::new(r"\b\w+@[\w-]+(\.[\w-]+)+\b", "mailto:$0").unwrap(),
+            ]
+        })
+        .as_slice()
+}
+
+/// Attach implicit-hyperlink attributes to the logical lines whose rows
+/// changed since `since`. wezterm groups wrapped physical rows into one
+/// logical line (and `apply_hyperlink_rules` writes the attribute back onto
+/// each physical row's cells), so a URL that wraps across the right edge is
+/// linked across the rows it spans. `lo` clamps the scan to rows that can
+/// still change (the old viewport top, same frozen-scrollback argument as
+/// the damage scan in `produce`); None scans everything. Returns the seqno
+/// to pass as `since` next time; wezterm's per-line scanned bits mean only
+/// genuinely-changed lines re-scan.
+fn scan_hyperlinks(term: &mut Terminal, since: usize, lo: Option<StableRowIndex>) -> usize {
+    let seqno = term.current_seqno();
+    let screen = term.screen_mut();
+    let base = screen.phys_to_stable_row_index(0);
+    let total = screen.scrollback_rows() as StableRowIndex;
+    if total == 0 {
+        return seqno;
+    }
+    let lo = lo.unwrap_or(base).max(base);
+    let changed = screen.get_changed_stable_rows(lo..base + total, since);
+    if let (Some(&a), Some(&b)) = (changed.first(), changed.last()) {
+        screen.for_each_logical_line_in_stable_range_mut(a..b + 1, |_, lines| {
+            // Rule scan only where it can matter: the text contains a URL /
+            // mailto marker, or a cell still carries a link that a rescan
+            // may need to clear. URL-free output (the common case) pays a
+            // substring check instead of six regexes.
+            let candidate = lines.iter().any(|l| {
+                let s = l.as_str();
+                s.contains("://") || s.contains('@')
+            }) || lines
+                .iter()
+                .any(|l| l.visible_cells().any(|c| c.attrs().hyperlink().is_some()));
+            if candidate {
+                Line::apply_hyperlink_rules(hyperlink_rules(), lines);
+            }
+            true
+        });
+    }
+    seqno
+}
+
 // --- render ------------------------------------------------------------------
 
 /// The cursor is its own self-identified overlay, positioned purely by CSS
@@ -624,14 +723,16 @@ fn cell_needs_box(glyph: &str, width: usize) -> bool {
     width != 1 || glyph.chars().count() > 1
 }
 
-/// One streaming pass over the row's cells: runs of equivalent attrs share one
-/// span, attrs are cloned only at run boundaries, and no per-cell allocation
-/// happens. Default-attr blanks are buffered so trailing ones are dropped --
-/// `white-space:pre` plus `.row{min-height}` keep the geometry without them.
+/// One streaming pass over the row's cells: runs of equivalent attrs AND the
+/// same link target share one wrapper (`<a>` when linked, `<span>` when only
+/// styled), attrs are cloned only at run boundaries, and no per-cell
+/// allocation happens beyond the run's href. Default-attr blanks are buffered
+/// so trailing ones are dropped -- `white-space:pre` plus `.row{min-height}`
+/// keep the geometry without them.
 fn render_row_into(
     out: &mut String,
     target: &str,
-    line: &wezterm_term::Line,
+    line: &Line,
     cols: usize,
     stable: StableRowIndex,
 ) {
@@ -639,8 +740,16 @@ fn render_row_into(
     let default = CellAttributes::default();
     let mut expected = 0usize;
     let mut pending_blanks = 0usize;
-    let mut span_open = false;
-    let mut run_attrs: Option<CellAttributes> = None;
+    // Some(close_tag) while a wrapper is open; run identity is attrs + href.
+    let mut open: Option<&'static str> = None;
+    let mut run: Option<(CellAttributes, Option<String>)> = None;
+    let close = |out: &mut String, open: &mut Option<&'static str>,
+                     run: &mut Option<(CellAttributes, Option<String>)>| {
+        if let Some(tag) = open.take() {
+            out.push_str(tag);
+        }
+        *run = None;
+    };
 
     for cell in line.visible_cells() {
         let col = cell.cell_index();
@@ -655,47 +764,50 @@ fn render_row_into(
         expected = col + width;
         let s = cell.str();
         let attrs = cell.attrs();
+        let href: Option<String> = attrs
+            .hyperlink()
+            .and_then(|h| safe_href(h.uri()))
+            .map(str::to_string);
 
-        let plain = attrs_equiv(attrs, &default);
+        let plain = href.is_none() && attrs_equiv(attrs, &default);
         if plain && width == 1 && (s == " " || s.is_empty()) {
             pending_blanks += 1;
             continue;
         }
         if pending_blanks > 0 {
-            if span_open {
-                out.push_str("</span>");
-                span_open = false;
-                run_attrs = None;
-            }
+            close(out, &mut open, &mut run);
             out.extend(std::iter::repeat(' ').take(pending_blanks));
             pending_blanks = 0;
         }
         if plain {
-            if span_open {
-                out.push_str("</span>");
-                span_open = false;
-                run_attrs = None;
-            }
+            close(out, &mut open, &mut run);
         } else {
-            let same = run_attrs.as_ref().is_some_and(|r| attrs_equiv(r, attrs));
+            let same = run
+                .as_ref()
+                .is_some_and(|(ra, rh)| attrs_equiv(ra, attrs) && *rh == href);
             if !same {
-                if span_open {
-                    out.push_str("</span>");
-                }
+                close(out, &mut open, &mut run);
                 let (classes, style) = cell_class_and_style(attrs);
-                if classes.is_empty() && style.is_empty() {
-                    span_open = false;
-                    run_attrs = None;
+                if href.is_none() && classes.is_empty() && style.is_empty() {
+                    // visually default (e.g. only non-rendered bits set)
                 } else {
-                    out.push_str("<span class=\"c");
-                    out.push_str(&classes);
-                    out.push('"');
+                    if let Some(h) = &href {
+                        out.push_str("<a href=\"");
+                        html_escape(h, out);
+                        out.push_str("\" target=\"_blank\" rel=\"noopener\"");
+                        open = Some("</a>");
+                    } else {
+                        out.push_str("<span");
+                        open = Some("</span>");
+                    }
+                    if !classes.is_empty() {
+                        let _ = write!(out, " class=\"c{classes}\"");
+                    }
                     if !style.is_empty() {
                         let _ = write!(out, " style=\"{style}\"");
                     }
                     out.push('>');
-                    span_open = true;
-                    run_attrs = Some(attrs.clone());
+                    run = Some((attrs.clone(), href.clone()));
                 }
             }
         }
@@ -708,8 +820,6 @@ fn render_row_into(
             html_escape(glyph, out);
         }
     }
-    if span_open {
-        out.push_str("</span>");
-    }
+    close(out, &mut open, &mut run);
     out.push_str("</div>");
 }
