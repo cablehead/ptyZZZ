@@ -110,8 +110,12 @@ const TMPL = r#'<!doctype html>
     --c12:#5454ff;--c13:#ff54ff;--c14:#54ffff;--c15:#fff;}
   body{background:#000;color:var(--term-fg);margin:0;font:14px/1.2 var(--term-font);overflow:hidden}
   #panes{display:flex;height:100vh}
+  #panes.stacked{flex-direction:column}
   .pane{flex:1;display:flex;flex-direction:column;background:var(--term-bg)}
   .pane+.pane{border-left:1px solid #444}
+  #panes.stacked .pane+.pane{border-left:none;border-top:1px solid #444}
+  #split{position:fixed;top:0;right:6px;z-index:2;color:#888;background:none;border:none;font:12px var(--term-font);cursor:pointer;padding:2px 4px}
+  #split:hover{color:#fff}
   .pane.focused .label{color:#fff;background:#333}
   .label{flex:none;font-size:11px;color:#888;background:#1a1a1a;padding:2px 8px}
   .scroll{flex:1;overflow-y:auto;position:relative}
@@ -130,6 +134,7 @@ const TMPL = r#'<!doctype html>
 </style></head>
 <body data-init="@get('/sse')">
   <div id=panes>__PANES_HTML__</div>
+  <button id=split title="toggle split direction"></button>
   <script type=module>
     const PANES = __PANES_JS__;
     // The client is byte-blind: it ships semantic key events and the
@@ -328,7 +333,8 @@ const TMPL = r#'<!doctype html>
     }
     // ?nofit observes without resizing the ptys -- for screenshots and
     // debugging; a second viewer's fit would otherwise fight this one's.
-    if (!new URLSearchParams(location.search).has("nofit")) {
+    const NOFIT = new URLSearchParams(location.search).has("nofit");
+    if (!NOFIT) {
       let fitTimer;
       addEventListener("resize", () => { clearTimeout(fitTimer); fitTimer = setTimeout(fit, 200); });
       fit();
@@ -336,6 +342,24 @@ const TMPL = r#'<!doctype html>
       // fallback font; re-measure once the real face is loaded.
       document.fonts.ready.then(fit);
     }
+    // Split direction: side by side (row) or stacked. Sticky via
+    // localStorage; ?split=stacked/row overrides (handy for links and
+    // headless checks). Toggling reshapes the pane boxes, so refit.
+    const panesEl = document.getElementById("panes");
+    const splitBtn = document.getElementById("split");
+    function setSplit(stacked) {
+      panesEl.classList.toggle("stacked", stacked);
+      splitBtn.textContent = stacked ? "=" : "||";
+      try { localStorage.setItem("split", stacked ? "stacked" : "row"); } catch {}
+      if (!NOFIT) fit();
+    }
+    splitBtn.addEventListener("click", () => {
+      setSplit(!panesEl.classList.contains("stacked"));
+      parkFocus();
+    });
+    const splitParam = new URLSearchParams(location.search).get("split");
+    setSplit(splitParam ? splitParam === "stacked"
+      : (() => { try { return localStorage.getItem("split") === "stacked"; } catch { return false; } })());
     // Follow the cursor like a terminal, not the last grid row: after a
     // clear the prompt sits at the top of the screen region with blank
     // rows below it, and bottom-pinning would hide it. Scrolling the
