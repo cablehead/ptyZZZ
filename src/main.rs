@@ -123,6 +123,34 @@ fn parse_key(k: &str) -> Option<KeyCode> {
     })
 }
 
+/// Encode a SUPER-modified named key as its xterm CSI form: param is
+/// 1 + shift|alt|ctrl|meta bits, e.g. Cmd+Left = CSI 1;9D. wezterm's
+/// encoder deliberately drops SUPER (plain xterm never sends it), but
+/// TUIs accept these forms and stacks2099 shipped them. Modified cursor
+/// keys use CSI even in application cursor mode, so no terminal state is
+/// needed. None = no CSI form (meta+char etc); the caller falls back.
+fn encode_super_key(kc: &KeyCode, mods_bits: u8) -> Option<String> {
+    let p = 1 + mods_bits;
+    Some(match kc {
+        KeyCode::UpArrow => format!("\x1b[1;{p}A"),
+        KeyCode::DownArrow => format!("\x1b[1;{p}B"),
+        KeyCode::RightArrow => format!("\x1b[1;{p}C"),
+        KeyCode::LeftArrow => format!("\x1b[1;{p}D"),
+        KeyCode::Home => format!("\x1b[1;{p}H"),
+        KeyCode::End => format!("\x1b[1;{p}F"),
+        KeyCode::Insert => format!("\x1b[2;{p}~"),
+        KeyCode::Delete => format!("\x1b[3;{p}~"),
+        KeyCode::PageUp => format!("\x1b[5;{p}~"),
+        KeyCode::PageDown => format!("\x1b[6;{p}~"),
+        KeyCode::Function(n @ 1..=4) => format!("\x1b[1;{p}{}", (b'P' + n - 1) as char),
+        KeyCode::Function(n @ 5..=12) => {
+            let intro = [15, 17, 18, 19, 20, 21, 23, 24][(n - 5) as usize];
+            format!("\x1b[{intro};{p}~")
+        }
+        _ => return None,
+    })
+}
+
 /// Client modifier bits (1 shift, 2 alt, 4 ctrl, 8 meta) -> wezterm modifiers.
 fn parse_mods(bits: u8) -> KeyModifiers {
     let mut m = KeyModifiers::NONE;
@@ -269,9 +297,24 @@ fn main() {
                     }
                     // key_down / send_paste encode through the terminal's own
                     // writer (the pty), honoring its current input modes.
+                    // SUPER-modified named keys are encoded here instead,
+                    // since wezterm's encoder drops that modifier.
                     Ok(Cmd::Key { key, mods }) => match parse_key(&key) {
                         Some(kc) => {
-                            let _ = term.lock().unwrap().key_down(kc, parse_mods(mods));
+                            if mods & 8 != 0 {
+                                if let Some(s) = encode_super_key(&kc, mods) {
+                                    let mut w = writer.lock().unwrap();
+                                    let _ = w.write_all(s.as_bytes());
+                                    let _ = w.flush();
+                                } else {
+                                    let _ = term
+                                        .lock()
+                                        .unwrap()
+                                        .key_down(kc, parse_mods(mods & !8));
+                                }
+                            } else {
+                                let _ = term.lock().unwrap().key_down(kc, parse_mods(mods));
+                            }
                         }
                         None => eprintln!("ptyZZZ: unknown key: {key}"),
                     },

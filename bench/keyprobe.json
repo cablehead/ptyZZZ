@@ -201,6 +201,24 @@
       "pause": 500,
       "paste": "end",
       "expect": "end"
+    },
+    {
+      "name": "cmd-left",
+      "key": "ArrowLeft",
+      "mods": 8,
+      "expect": "\u001b[1;9D"
+    },
+    {
+      "name": "cmd-right",
+      "key": "ArrowRight",
+      "mods": 8,
+      "expect": "\u001b[1;9C"
+    },
+    {
+      "name": "cmd-shift-left",
+      "key": "ArrowLeft",
+      "mods": 9,
+      "expect": "\u001b[1;10D"
     }
   ]
 }
