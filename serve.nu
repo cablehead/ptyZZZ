@@ -242,21 +242,33 @@ const TMPL = r#'<!doctype html>
       addEventListener("resize", () => { clearTimeout(fitTimer); fitTimer = setTimeout(fit, 200); });
       fit();
     }
-    // Follow each pane's tail like a terminal, but let the user scroll back
-    // undisturbed; resume following when they return to the bottom.
+    // Follow the cursor like a terminal, not the last grid row: after a
+    // clear the prompt sits at the top of the screen region with blank
+    // rows below it, and bottom-pinning would hide it. Scrolling the
+    // cursor out of view pauses following; scrolling it back resumes --
+    // our own follow scrolls keep it visible, so no self-scroll flag is
+    // needed.
     const follow = {};
+    function cursorInView(name) {
+      const box = document.querySelector(`.pane[data-pane=${name}] .scroll`);
+      const cur = document.getElementById(`grid-${name}-cursor`);
+      if (!box || !cur) return true;
+      const b = box.getBoundingClientRect(), c = cur.getBoundingClientRect();
+      return c.bottom > b.top && c.top < b.bottom;
+    }
     document.querySelectorAll(".pane").forEach(p => {
-      const box = p.querySelector(".scroll");
-      follow[p.dataset.pane] = true;
-      box.addEventListener("scroll", () => {
-        follow[p.dataset.pane] = box.scrollTop + box.clientHeight >= box.scrollHeight - 48;
+      const name = p.dataset.pane;
+      follow[name] = true;
+      p.querySelector(".scroll").addEventListener("scroll", () => {
+        follow[name] = cursorInView(name);
       });
     });
     new MutationObserver(() => {
-      document.querySelectorAll(".pane").forEach(p => {
-        const box = p.querySelector(".scroll");
-        if (follow[p.dataset.pane]) box.scrollTop = box.scrollHeight;
-      });
+      for (const name of PANES) {
+        if (follow[name]) {
+          document.getElementById(`grid-${name}-cursor`)?.scrollIntoView({block: "nearest"});
+        }
+      }
     }).observe(document.body, {childList: true, subtree: true});
   </script>
 </body></html>'#
