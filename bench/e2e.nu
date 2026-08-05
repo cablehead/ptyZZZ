@@ -73,7 +73,7 @@ def run-pty [name: string, args: list<string>] {
     let out = mktemp -t
     spawn-cpu-sampler | ignore
     let t0 = date now
-    "" | ^$b run ...$args o> $out
+    "" | ^$b run --on-stdin-eof ignore ...$args o> $out
     let wall = (date now) - $t0
     let cpu = try { job recv --tag $CPU_TAG --timeout 5sec } catch { -1 }
     let row = report $name $wall $cpu $out

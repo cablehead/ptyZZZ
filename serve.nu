@@ -64,7 +64,7 @@ def register-service [topic: string, config: string] {
 
 const SVC = '{
   run: {||
-    ^PTYBIN run --target TARGET -- nu
+    ^PTYBIN run --die-with-parent --target TARGET -- nu
     | lines | each {|l|
         let e = try { $l | from json } catch { null }
         if $e == null { return }
