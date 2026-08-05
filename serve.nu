@@ -111,19 +111,27 @@ const TMPL = r#'<!doctype html>
   body{background:#000;color:var(--term-fg);margin:0;font:14px/1.2 var(--term-font);overflow:hidden}
   #panes{display:flex;height:100vh}
   #panes.stacked{flex-direction:column}
-  .pane{flex:1;display:flex;flex-direction:column;background:var(--term-bg)}
+  /* min-width/height:0: flex items otherwise refuse to shrink below their
+     content (min-size:auto), and a tall grid shoves its sibling offscreen
+     in stacked mode; the scroll box must shrink so it scrolls instead. */
+  .pane{flex:1;display:flex;flex-direction:column;background:var(--term-bg);min-width:0;min-height:0}
   .pane+.pane{border-left:1px solid #444}
   #panes.stacked .pane+.pane{border-left:none;border-top:1px solid #444}
   #split{position:fixed;top:0;right:6px;z-index:2;color:#888;background:none;border:none;font:12px var(--term-font);cursor:pointer;padding:2px 4px}
   #split:hover{color:#fff}
   .pane.focused .label{color:#fff;background:#333}
   .label{flex:none;font-size:11px;color:#888;background:#1a1a1a;padding:2px 8px}
-  .scroll{flex:1;overflow-y:auto;position:relative}
+  .scroll{flex:1;overflow-y:auto;position:relative;min-height:0}
   .scroll>[id^="grid-"]{white-space:pre;padding:8px;position:relative;box-sizing:border-box}
   .row{min-height:1.2em}
   .pane a{color:inherit;text-decoration:underline}
+  /* Inert cursor: hollow outline. The focused pane's cursor is live: solid,
+     XOR-inverted over the glyph, blinking -- the tell for where keys land. */
   .cursor{position:absolute;top:calc(8px + var(--cursor-row)*1.2em);left:calc(8px + var(--cursor-col)*1ch);
-    width:1ch;height:1.2em;background:var(--term-fg);opacity:.4;pointer-events:none}
+    width:1ch;height:1.2em;pointer-events:none;box-shadow:inset 0 0 0 1px var(--term-fg)}
+  .pane.focused .cursor{background:var(--term-fg);box-shadow:none;mix-blend-mode:difference;
+    animation:cursor-blink 1s steps(2) infinite}
+  @keyframes cursor-blink{50%{opacity:0.4}}
   .wc{display:inline-block;width:calc(var(--w)*1ch)}
   .sb{font-weight:bold}.si{font-style:italic}.su{text-decoration:underline}
   .sx{visibility:hidden}.ss{text-decoration:line-through}
