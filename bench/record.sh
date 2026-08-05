@@ -22,7 +22,7 @@ mkdir -p bench/corpus
 
 # asciiquarium: app-paced repaints, recorded at its natural rate.
 if [ -x "$ANIM" ]; then
-    "$BIN" run --record bench/corpus/aqua.raw -- \
+    "$BIN" run --on-stdin-eof ignore --record bench/corpus/aqua.raw -- \
         timeout "$SECS" "$ANIM" </dev/null >/dev/null
     echo "aqua.raw: $(wc -c <bench/corpus/aqua.raw) bytes"
 else

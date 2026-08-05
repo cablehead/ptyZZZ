@@ -81,6 +81,18 @@ enum Sub {
         /// tee the raw pty byte stream to this file (for bench corpora)
         #[arg(long)]
         record: Option<std::path::PathBuf>,
+        /// what stdin EOF means: the supervisor feeding us commands is gone.
+        /// "exit" kills the pty child and shuts down (a duplex service's
+        /// input never ends while the service lives, so EOF is a reliable
+        /// orphan signal, even after the supervisor is SIGKILLed); "ignore"
+        /// is for harnesses that pipe a finite script and read on
+        #[arg(long, default_value = "exit", value_parser = ["exit", "ignore"])]
+        on_stdin_eof: String,
+        /// die when the parent process dies (Linux PR_SET_PDEATHSIG):
+        /// exec-like lifetime coupling to the supervisor that no pipe or
+        /// event protocol can miss
+        #[arg(long)]
+        die_with_parent: bool,
         /// command to run (default: $SHELL or nu). Everything after `--`.
         #[arg(trailing_var_arg = true)]
         cmd: Vec<String>,
@@ -379,9 +391,45 @@ impl EventListener for PtyProxy {
     }
 }
 
+/// PR_SET_PDEATHSIG via a direct prctl declaration (no libc crate for one
+/// call). Fires when the spawning thread dies, which for our supervisors
+/// (a service's run thread) is exactly when we should go too. The getppid
+/// check closes the race where the parent died before we armed.
+#[cfg(target_os = "linux")]
+fn arm_pdeathsig() {
+    unsafe extern "C" {
+        fn prctl(option: i32, arg2: u64, arg3: u64, arg4: u64, arg5: u64) -> i32;
+        fn getppid() -> i32;
+    }
+    const PR_SET_PDEATHSIG: i32 = 1;
+    const SIGTERM: u64 = 15;
+    unsafe {
+        prctl(PR_SET_PDEATHSIG, SIGTERM, 0, 0, 0);
+        if getppid() == 1 {
+            std::process::exit(0);
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn arm_pdeathsig() {}
+
 fn main() {
-    let Sub::Run { cols, rows, target, coalesce, keyframe_interval, scrollback, record, cmd } =
-        Args::parse().sub;
+    let Sub::Run {
+        cols,
+        rows,
+        target,
+        coalesce,
+        keyframe_interval,
+        scrollback,
+        record,
+        on_stdin_eof,
+        die_with_parent,
+        cmd,
+    } = Args::parse().sub;
+    if die_with_parent {
+        arm_pdeathsig();
+    }
     let coalesce = Duration::from_millis(coalesce);
     let keyframe_interval = Duration::from_secs(keyframe_interval.max(1));
     let cmd = if cmd.is_empty() {
@@ -411,7 +459,7 @@ fn main() {
     if let Ok(cwd) = std::env::current_dir() {
         builder.cwd(cwd);
     }
-    let mut child = pair.slave.spawn_command(builder).expect("spawn");
+    let child = Arc::new(Mutex::new(pair.slave.spawn_command(builder).expect("spawn")));
     drop(pair.slave);
 
     let writer: Arc<Mutex<Box<dyn Write + Send>>> =
@@ -459,10 +507,15 @@ fn main() {
         });
     }
 
-    // stdin: JSONL commands -> pty.
+    // stdin: JSONL commands -> pty. EOF means the supervisor feeding us is
+    // gone (a duplex service input never ends while the service lives):
+    // kill the pty child so the normal teardown runs, unless the caller
+    // opted out for finite piped scripts.
     {
         let writer = writer.clone();
         let master = master.clone();
+        let child = child.clone();
+        let exit_on_eof = on_stdin_eof == "exit";
         let term = term.clone();
         let dirty = dirty.clone();
         std::thread::spawn(move || {
@@ -513,6 +566,9 @@ fn main() {
                     }
                     Err(_) => eprintln!("ptyZZZ: bad command: {line}"),
                 }
+            }
+            if exit_on_eof {
+                let _ = child.lock().unwrap().kill();
             }
         });
     }
@@ -566,7 +622,7 @@ fn main() {
             // A dead stdout means no one is listening (the adapter that
             // spawned us is gone): exit instead of rendering forever.
             if writeln!(w, "{v}").and_then(|_| w.flush()).is_err() {
-                let _ = child.kill();
+                let _ = child.lock().unwrap().kill();
                 break;
             }
         }
@@ -576,7 +632,7 @@ fn main() {
         }
     }
 
-    let code = child.wait().map(|s| s.exit_code() as i64).unwrap_or(-1);
+    let code = child.lock().unwrap().wait().map(|s| s.exit_code() as i64).unwrap_or(-1);
     let mut w = out.lock();
     let _ = writeln!(w, "{}", serde_json::json!({"t":"exit","code":code}));
     let _ = w.flush();
