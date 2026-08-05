@@ -166,14 +166,16 @@ fn parse_key(k: &str) -> Option<Key> {
     })
 }
 
-/// Client modifier bits: 1 shift, 2 alt, 4 ctrl, 8 meta. Meta parses but
-/// does not encode; xterm's modifier parameter has no slot wezterm emits
-/// for it either.
+/// Client modifier bits: 1 shift, 2 alt, 4 ctrl, 8 meta. Meta encodes into
+/// the xterm parameter for named keys (Cmd+Left = CSI 1;9D, matching
+/// stacks2099 and main's encode_super_key); chars never reach here with
+/// meta (the client reserves Cmd+char for the browser).
 #[derive(Clone, Copy)]
 struct Mods {
     shift: bool,
     alt: bool,
     ctrl: bool,
+    meta: bool,
 }
 
 impl Mods {
@@ -182,11 +184,15 @@ impl Mods {
             shift: bits & 1 != 0,
             alt: bits & 2 != 0,
             ctrl: bits & 4 != 0,
+            meta: bits & 8 != 0,
         }
     }
-    /// xterm modifier value: shift 1, alt 2, ctrl 4.
+    /// xterm modifier value: shift 1, alt 2, ctrl 4, meta 8.
     fn xterm(self) -> u8 {
-        (self.shift as u8) | ((self.alt as u8) << 1) | ((self.ctrl as u8) << 2)
+        (self.shift as u8)
+            | ((self.alt as u8) << 1)
+            | ((self.ctrl as u8) << 2)
+            | ((self.meta as u8) << 3)
     }
 }
 
