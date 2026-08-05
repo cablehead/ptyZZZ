@@ -231,8 +231,17 @@ const TMPL = r#'<!doctype html>
         try { ta.focus(); } catch {}
       });
     }
-    document.querySelectorAll(".pane").forEach(p =>
-      p.addEventListener("mousedown", () => { setFocus(p.dataset.pane); parkFocus(); }));
+    // Route keys on mousedown, but park focus on click: click fires after
+    // mouseup, so a drag's finished selection is visible to parkFocus's
+    // guard. On mousedown a drag's selection is still collapsed one frame
+    // in, so parking there steals focus and cancels the drag. A plain
+    // click must still park: a dead key maps to null in keyEvent, so the
+    // keydown path alone would not refocus the surface before composing.
+    // Mirrors stacks2099, which calls focusInput from the click handler.
+    document.querySelectorAll(".pane").forEach(p => {
+      p.addEventListener("mousedown", () => setFocus(p.dataset.pane));
+      p.addEventListener("click", () => parkFocus());
+    });
     setFocus(focused);
     parkFocus();
     // ?drive replays a key/paste script from the URL hash (base64 JSON, the
