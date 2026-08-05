@@ -1,0 +1,206 @@
+{
+  "startDelay": 2000,
+  "steps": [
+    {
+      "name": "char-a",
+      "key": "a",
+      "expect": "a"
+    },
+    {
+      "name": "char-A-shift",
+      "key": "A",
+      "mods": 1,
+      "expect": "A"
+    },
+    {
+      "name": "char-5",
+      "key": "5",
+      "expect": "5"
+    },
+    {
+      "name": "space",
+      "key": " ",
+      "expect": " "
+    },
+    {
+      "name": "ctrl-a",
+      "key": "a",
+      "mods": 4,
+      "expect": "\u0001"
+    },
+    {
+      "name": "ctrl-c",
+      "key": "c",
+      "mods": 4,
+      "expect": "\u0003"
+    },
+    {
+      "name": "ctrl-space",
+      "key": " ",
+      "mods": 4,
+      "expect": "\u0000"
+    },
+    {
+      "name": "alt-f-chord",
+      "key": "f",
+      "mods": 2,
+      "code": "KeyF",
+      "expect": "\u001bf"
+    },
+    {
+      "name": "option-compose-pipe",
+      "key": "|",
+      "mods": 2,
+      "code": "KeyI",
+      "expect": "|"
+    },
+    {
+      "name": "enter",
+      "key": "Enter",
+      "expect": "\r"
+    },
+    {
+      "name": "tab",
+      "key": "Tab",
+      "expect": "\t"
+    },
+    {
+      "name": "shift-tab",
+      "key": "Tab",
+      "mods": 1,
+      "expect": "\u001b[Z"
+    },
+    {
+      "name": "backspace",
+      "key": "Backspace",
+      "expect": "\u007f"
+    },
+    {
+      "name": "alt-backspace",
+      "key": "Backspace",
+      "mods": 2,
+      "expect": "\u001b\u007f"
+    },
+    {
+      "name": "escape",
+      "key": "Escape",
+      "expect": "\u001b"
+    },
+    {
+      "name": "arrow-up",
+      "key": "ArrowUp",
+      "expect": "\u001b[A"
+    },
+    {
+      "name": "arrow-down",
+      "key": "ArrowDown",
+      "expect": "\u001b[B"
+    },
+    {
+      "name": "arrow-right",
+      "key": "ArrowRight",
+      "expect": "\u001b[C"
+    },
+    {
+      "name": "arrow-left",
+      "key": "ArrowLeft",
+      "expect": "\u001b[D"
+    },
+    {
+      "name": "shift-arrow-up",
+      "key": "ArrowUp",
+      "mods": 1,
+      "expect": "\u001b[1;2A"
+    },
+    {
+      "name": "ctrl-arrow-right",
+      "key": "ArrowRight",
+      "mods": 4,
+      "expect": "\u001b[1;5C"
+    },
+    {
+      "name": "home",
+      "key": "Home",
+      "expect": "\u001b[H"
+    },
+    {
+      "name": "end",
+      "key": "End",
+      "expect": "\u001b[F"
+    },
+    {
+      "name": "pageup",
+      "key": "PageUp",
+      "expect": "\u001b[5~"
+    },
+    {
+      "name": "pagedown",
+      "key": "PageDown",
+      "expect": "\u001b[6~"
+    },
+    {
+      "name": "insert",
+      "key": "Insert",
+      "expect": "\u001b[2~"
+    },
+    {
+      "name": "delete",
+      "key": "Delete",
+      "expect": "\u001b[3~"
+    },
+    {
+      "name": "f1",
+      "key": "F1",
+      "expect": "\u001bOP"
+    },
+    {
+      "name": "f2",
+      "key": "F2",
+      "expect": "\u001bOQ"
+    },
+    {
+      "name": "f5",
+      "key": "F5",
+      "expect": "\u001b[15~"
+    },
+    {
+      "name": "f12",
+      "key": "F12",
+      "expect": "\u001b[24~"
+    },
+    {
+      "name": "app-cursor-up",
+      "pre": "\u001b[?1h",
+      "pause": 500,
+      "key": "ArrowUp",
+      "expect": "\u001bOA"
+    },
+    {
+      "name": "normal-cursor-down",
+      "pre": "\u001b[?1l",
+      "pause": 500,
+      "key": "ArrowDown",
+      "expect": "\u001b[B"
+    },
+    {
+      "name": "paste-plain",
+      "pause": 200,
+      "paste": "hi",
+      "expect": "hi"
+    },
+    {
+      "name": "paste-bracketed",
+      "pre": "\u001b[?2004h",
+      "pause": 500,
+      "paste": "ok",
+      "expect": "\u001b[200~ok\u001b[201~"
+    },
+    {
+      "name": "paste-unbracketed-again",
+      "pre": "\u001b[?2004l",
+      "pause": 500,
+      "paste": "end",
+      "expect": "end"
+    }
+  ]
+}

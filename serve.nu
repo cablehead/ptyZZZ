@@ -178,6 +178,31 @@ const TMPL = r#'<!doctype html>
     document.querySelectorAll(".pane").forEach(p =>
       p.addEventListener("mousedown", () => setFocus(p.dataset.pane)));
     setFocus(focused);
+    // ?drive replays a key/paste script from the URL hash (base64 JSON, the
+    // bench/keyprobe.json shape) as synthesized events, exercising the real
+    // keydown/paste listeners end to end. Test harness affordance, like
+    // ?nofit; see bench/keytest.nu.
+    if (new URLSearchParams(location.search).has("drive")) (async () => {
+      const spec = JSON.parse(atob(location.hash.slice(1)));
+      if (spec.pane) setFocus(spec.pane);
+      await new Promise(r => setTimeout(r, spec.startDelay ?? 2000));
+      for (const s of spec.steps) {
+        if (s.pause) await new Promise(r => setTimeout(r, s.pause));
+        if (s.key !== undefined) {
+          dispatchEvent(new KeyboardEvent("keydown", {
+            key: s.key, code: s.code ?? "",
+            shiftKey: !!(s.mods & 1), altKey: !!(s.mods & 2), ctrlKey: !!(s.mods & 4),
+            bubbles: true, cancelable: true,
+          }));
+        }
+        if (s.paste !== undefined) {
+          const dt = new DataTransfer();
+          dt.setData("text/plain", s.paste);
+          dispatchEvent(new ClipboardEvent("paste", {clipboardData: dt, bubbles: true, cancelable: true}));
+        }
+        await new Promise(r => setTimeout(r, s.gap ?? 60));
+      }
+    })();
     addEventListener("keydown", ev => {
       // Composing keydowns (dead keys, IME) are provisional; skip them.
       if (ev.isComposing || ev.keyCode === 229) return;
