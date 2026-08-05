@@ -93,6 +93,12 @@ bytes-per-frame within a few percent.
 
 - rio confirms (or breaks) lines_evicted() as a row-identity contract.
   An upstream issue is worth filing before promoting the branch.
+- Before promoting rio-vt: close the input-encoding parity gap. The
+  {t:key} protocol is encoded by wezterm's key_down on main, which
+  covers modifyOtherKeys and the kitty keyboard protocol when apps
+  negotiate them. The rio branch's hand-rolled encoder honors DECCKM,
+  LNM, and bracketed paste but emits legacy fallbacks for those two;
+  rio exposes the needed flags (modify_other_keys(), keyboard_mode()).
 - The wezterm git pin causes real maintenance pain.
 - The roadmap adds very deep scrollback, lazy history rendering, or a
   client-side rendering tier. Those are the shapes where ghostty's
