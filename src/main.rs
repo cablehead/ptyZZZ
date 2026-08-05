@@ -52,8 +52,10 @@ enum Sub {
         /// element id to render the grid into (container + row ids)
         #[arg(long, default_value = "grid")]
         target: String,
-        /// coalesce window in ms; caps frame rate (~1000/ms). Higher = fewer,
-        /// coarser frames -- lighter on the client and the fan-out.
+        /// min gap in ms between frame production starts; caps frame rate
+        /// (~1000/ms). Leading edge: after idle the first change emits
+        /// immediately. Higher = fewer, coarser frames -- lighter on the
+        /// client and the fan-out.
         #[arg(long, default_value_t = 16)]
         coalesce: u64,
         /// seconds between healing keyframes while diffs are flowing; a full
@@ -302,10 +304,12 @@ fn main() {
     let out = std::io::stdout();
     let mut state = EmitState::new(target);
     let mut last_gen = u64::MAX; // != 0 so the first pass emits immediately
-    // Cost of building+writing the previous frame; the coalesce sleep is
-    // shortened by this much so continuous output emits on a steady
-    // ~coalesce cadence instead of coalesce + frame cost.
-    let mut frame_cost = Duration::ZERO;
+    // Leading-edge pacing: a frame's production may start no sooner than
+    // `coalesce` after the previous frame's production started. After idle
+    // the deadline is already past, so the first change emits immediately;
+    // during a burst, production starts on a constant cadence, and the time
+    // spent producing a frame is not charged against the gate.
+    let mut last_frame_at = Instant::now().checked_sub(coalesce).unwrap_or_else(Instant::now);
     loop {
         {
             let (lock, cv) = &*dirty;
@@ -328,14 +332,14 @@ fn main() {
             last_gen = *g;
         }
         if !done.load(Ordering::SeqCst) {
-            std::thread::sleep(coalesce.saturating_sub(frame_cost));
+            std::thread::sleep((last_frame_at + coalesce).saturating_duration_since(Instant::now()));
             let (lock, _) = &*dirty;
             last_gen = *lock.lock().unwrap();
         }
 
         let keyframe_due =
             state.dirty_since_keyframe && state.last_keyframe.elapsed() >= keyframe_interval;
-        let started = Instant::now();
+        last_frame_at = Instant::now();
         let frame = {
             let mut t = term.lock().unwrap();
             state.produce(&mut t, keyframe_due)
@@ -349,7 +353,6 @@ fn main() {
                 break;
             }
         }
-        frame_cost = started.elapsed();
 
         if done.load(Ordering::SeqCst) {
             break;

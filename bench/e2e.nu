@@ -7,8 +7,10 @@
 #
 # Workloads are deterministic: scroll24 is generated, aqua24/vim24 replay
 # corpora recorded by bench/record.sh. The replayer slices each corpus
-# into 24 chunks/sec, so paced scenarios run at 24 fps regardless of the
-# source app's own draw rate. Keep SECS equal to the recording length
+# into 24 chunks/sec. With leading-edge emission a burst splits into an
+# immediate frame plus the remainder one window later, so paced scenarios
+# emit 24-48 fps depending on burst size (vim24 single-key bursts stay
+# ~24). Keep SECS equal to the recording length
 # (record.sh default 10): a shorter SECS replays the same bytes in fewer,
 # larger chunks, which shifts frames from the diff path to keyframes.
 # firehose is unpaced with coalesce=41ms, so its realized fps doubles as
