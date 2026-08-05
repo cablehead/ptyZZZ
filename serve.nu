@@ -177,15 +177,51 @@ const TMPL = r#'<!doctype html>
       document.querySelectorAll(".pane").forEach(p =>
         p.classList.toggle("focused", p.dataset.pane === name));
     }
+    // Composition surface (lifted from stacks2099 key-buffer.js): dead keys
+    // and IME need the OS composing into a real editable element; without
+    // one, an accent collapses to its base letter. Keydowns during a
+    // composition are provisional and skipped; compositionend delivers the
+    // finished text, which travels as {t:input} (composed text is text,
+    // not keys). Offscreen via opacity, not display:none, which cannot
+    // hold focus.
+    const ta = document.createElement("textarea");
+    ta.id = "compose";
+    ta.setAttribute("aria-hidden", "true");
+    ta.tabIndex = -1;
+    ta.autocapitalize = "off"; ta.autocomplete = "off"; ta.spellcheck = false;
+    ta.style.cssText = "position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;padding:0;border:0;outline:0;resize:none;overflow:hidden;z-index:-1;";
+    document.body.appendChild(ta);
+    let composing = false;
+    ta.addEventListener("compositionstart", () => { composing = true; });
+    ta.addEventListener("compositionend", ev => {
+      composing = false;
+      const data = ev.data || ta.value;
+      ta.value = "";
+      if (data) send(focused, {t:"input", b: data});
+    });
+    // Park DOM focus on the composition surface, deferred past layout, and
+    // never while the user holds a text selection (focusing would collapse
+    // it; typing re-parks via the keydown path instead).
+    function parkFocus() {
+      requestAnimationFrame(() => {
+        const sel = getSelection();
+        if (sel && !sel.isCollapsed) return;
+        try { ta.focus(); } catch {}
+      });
+    }
     document.querySelectorAll(".pane").forEach(p =>
-      p.addEventListener("mousedown", () => setFocus(p.dataset.pane)));
+      p.addEventListener("mousedown", () => { setFocus(p.dataset.pane); parkFocus(); }));
     setFocus(focused);
+    parkFocus();
     // ?drive replays a key/paste script from the URL hash (base64 JSON, the
     // bench/keyprobe.json shape) as synthesized events, exercising the real
     // keydown/paste listeners end to end. Test harness affordance, like
     // ?nofit; see bench/keytest.nu.
     if (new URLSearchParams(location.search).has("drive")) (async () => {
-      const spec = JSON.parse(atob(location.hash.slice(1)));
+      // atob yields latin1 code units; decode the underlying UTF-8 bytes
+      // properly or non-ASCII compose steps arrive double-encoded.
+      const spec = JSON.parse(new TextDecoder().decode(
+        Uint8Array.from(atob(location.hash.slice(1)), c => c.charCodeAt(0))));
       if (spec.pane) setFocus(spec.pane);
       await new Promise(r => setTimeout(r, spec.startDelay ?? 2000));
       for (const s of spec.steps) {
@@ -202,15 +238,29 @@ const TMPL = r#'<!doctype html>
           dt.setData("text/plain", s.paste);
           dispatchEvent(new ClipboardEvent("paste", {clipboardData: dt, bubbles: true, cancelable: true}));
         }
+        if (s.compose !== undefined) {
+          // Replay a composition session the way a browser fires one:
+          // start, provisional keydowns flagged isComposing (which the
+          // client must drop), then the finished text on compositionend.
+          const el = document.getElementById("compose");
+          el.dispatchEvent(new CompositionEvent("compositionstart", {bubbles: true}));
+          el.dispatchEvent(new KeyboardEvent("keydown", {key: "Dead", isComposing: true, bubbles: true, cancelable: true}));
+          for (const ch of s.compose) {
+            el.dispatchEvent(new KeyboardEvent("keydown", {key: ch, isComposing: true, bubbles: true, cancelable: true}));
+          }
+          el.dispatchEvent(new CompositionEvent("compositionend", {data: s.compose, bubbles: true}));
+        }
         await new Promise(r => setTimeout(r, s.gap ?? 60));
       }
     })();
     addEventListener("keydown", ev => {
       // Composing keydowns (dead keys, IME) are provisional; skip them.
-      if (ev.isComposing || ev.keyCode === 229) return;
-      // Leave keys aimed at real form fields alone.
+      // compositionend sends the finished string.
+      if (ev.isComposing || ev.keyCode === 229 || composing) return;
+      // Leave keys aimed at real form fields alone; our own composition
+      // surface is the pty's capture point, not a form field.
       const t = ev.target, tag = t && t.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (t && t.isContentEditable)) return;
+      if (t !== ta && (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (t && t.isContentEditable))) return;
       // Selection beats SIGINT: Ctrl+C with a selection copies.
       if (ev.ctrlKey && !ev.altKey && !ev.metaKey && ev.key === "c") {
         const sel = getSelection().toString();
@@ -218,7 +268,12 @@ const TMPL = r#'<!doctype html>
       }
       const frame = keyEvent(ev);
       if (frame === null) return;
+      // A key we forward means the user is typing, not selecting: re-park
+      // focus so the next dead key composes, and drop any stray char the
+      // keypress may have placed in the surface.
+      if (document.activeElement !== ta) ta.focus();
       ev.preventDefault();
+      ta.value = "";
       send(focused, frame);
     });
     addEventListener("paste", ev => {

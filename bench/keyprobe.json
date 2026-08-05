@@ -219,6 +219,38 @@
       "key": "ArrowLeft",
       "mods": 9,
       "expect": "\u001b[1;10D"
+    },
+    {
+      "name": "alt-left",
+      "key": "ArrowLeft",
+      "mods": 2,
+      "expect": "\u001b[1;3D"
+    },
+    {
+      "name": "ctrl-delete",
+      "key": "Delete",
+      "mods": 4,
+      "expect": "\u001b[3;5~"
+    },
+    {
+      "name": "compose-eacute",
+      "compose": "é",
+      "expect": "é"
+    },
+    {
+      "name": "compose-cjk",
+      "compose": "日本",
+      "expect": "日本"
+    },
+    {
+      "name": "compose-cancelled",
+      "compose": "",
+      "expect": ""
+    },
+    {
+      "name": "post-compose-char",
+      "key": "x",
+      "expect": "x"
     }
   ]
 }
