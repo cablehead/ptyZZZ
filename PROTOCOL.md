@@ -6,7 +6,18 @@ a nushell service closure adapts these lines to/from frames.
 ## stdin (commands -> pty), one JSON object per line
 
     {"t":"input","b":"ls\n"}        raw bytes for the pty (b is a utf-8 string)
+    {"t":"key","key":"ArrowUp","mods":0}
+    {"t":"paste","s":"multi\nline"}
     {"t":"resize","cols":80,"rows":24}
+
+`key` is a semantic key event: a browser KeyboardEvent.key name (a single
+character, the editing/navigation cluster, or F1-F24) plus a modifier
+bitfield (1 shift, 2 alt, 4 ctrl, 8 meta). The emulator encodes it against
+its live input modes (application cursor keys, modifyOtherKeys, ...),
+which a byte-sending client cannot know. `paste` is wrapped in
+bracketed-paste markers when the application has enabled them. Prefer
+these over `input` for anything a user typed; `input` stays as the raw
+escape hatch (and carries IME-composed text).
 
 ## stdout (events <- pty), one JSON object per line
 
