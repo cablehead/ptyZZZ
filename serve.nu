@@ -101,11 +101,12 @@ const TMPL = r#'<!doctype html>
     --c12:#5454ff;--c13:#ff54ff;--c14:#54ffff;--c15:#fff;}
   body{background:#000;color:var(--term-fg);margin:0;font:14px/1.2 monospace;overflow:hidden}
   #panes{display:flex;height:100vh}
-  .pane{flex:1;overflow-y:auto;background:var(--term-bg);position:relative}
+  .pane{flex:1;display:flex;flex-direction:column;background:var(--term-bg)}
   .pane+.pane{border-left:1px solid #444}
   .pane.focused .label{color:#fff;background:#333}
-  .label{position:sticky;top:0;z-index:1;font-size:11px;color:#888;background:#1a1a1a;padding:2px 8px}
-  .pane>[id^="grid-"]{white-space:pre;padding:8px;position:relative;box-sizing:border-box}
+  .label{flex:none;font-size:11px;color:#888;background:#1a1a1a;padding:2px 8px}
+  .scroll{flex:1;overflow-y:auto;position:relative}
+  .scroll>[id^="grid-"]{white-space:pre;padding:8px;position:relative;box-sizing:border-box}
   .row{min-height:1.2em}
   .pane a{color:inherit;text-decoration:underline}
   .cursor{position:absolute;top:calc(8px + var(--cursor-row)*1.2em);left:calc(8px + var(--cursor-col)*1ch);
@@ -216,18 +217,17 @@ const TMPL = r#'<!doctype html>
     const lastFit = {};
     function fit() {
       for (const name of PANES) {
-        const pane = document.querySelector(`.pane[data-pane=${name}]`);
-        if (!pane) continue;
+        const box = document.querySelector(`.pane[data-pane=${name}] .scroll`);
+        if (!box) continue;
         const probe = document.createElement("div");
         probe.textContent = "M".repeat(40);
         probe.style.cssText = "position:absolute;visibility:hidden;white-space:pre";
-        pane.appendChild(probe);
+        box.appendChild(probe);
         const r = probe.getBoundingClientRect();
-        pane.removeChild(probe);
+        box.removeChild(probe);
         if (r.width === 0 || r.height === 0) continue;
-        const labelH = pane.querySelector(".label")?.offsetHeight ?? 0;
-        const cols = Math.max(20, Math.floor((pane.clientWidth - 16) / (r.width / 40)));
-        const rows = Math.max(5, Math.floor((pane.clientHeight - labelH - 16) / r.height));
+        const cols = Math.max(20, Math.floor((box.clientWidth - 16) / (r.width / 40)));
+        const rows = Math.max(5, Math.floor((box.clientHeight - 16) / r.height));
         const prev = lastFit[name];
         if (!prev || prev.cols !== cols || prev.rows !== rows) {
           lastFit[name] = {cols, rows};
@@ -242,14 +242,16 @@ const TMPL = r#'<!doctype html>
     // undisturbed; resume following when they return to the bottom.
     const follow = {};
     document.querySelectorAll(".pane").forEach(p => {
+      const box = p.querySelector(".scroll");
       follow[p.dataset.pane] = true;
-      p.addEventListener("scroll", () => {
-        follow[p.dataset.pane] = p.scrollTop + p.clientHeight >= p.scrollHeight - 48;
+      box.addEventListener("scroll", () => {
+        follow[p.dataset.pane] = box.scrollTop + box.clientHeight >= box.scrollHeight - 48;
       });
     });
     new MutationObserver(() => {
       document.querySelectorAll(".pane").forEach(p => {
-        if (follow[p.dataset.pane]) p.scrollTop = p.scrollHeight;
+        const box = p.querySelector(".scroll");
+        if (follow[p.dataset.pane]) box.scrollTop = box.scrollHeight;
       });
     }).observe(document.body, {childList: true, subtree: true});
   </script>
@@ -259,7 +261,7 @@ let PAGE = (
   $TMPL
   | str replace "__PANES_HTML__" (
       $panes | each {|p|
-        $"<div class=pane data-pane=($p.name)><div class=label>($p.name)</div><div id=grid-($p.name)>connecting...</div></div>"
+        $"<div class=pane data-pane=($p.name)><div class=label>($p.name)</div><div class=scroll><div id=grid-($p.name)>connecting...</div></div></div>"
       } | str join ""
     )
   | str replace "__PANES_JS__" ($pane_names | to json --raw)
