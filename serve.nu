@@ -1,71 +1,97 @@
-# ptyZZZ experiment: a pty owned by an xs *service*, shown over one /sse.
+# ptyZZZ experiment: ptys owned by xs *services*, shown over one /sse.
 #
 # Run:
 #   ~/http-nu/target/release/http-nu --dev --datastar --services --store ./store \
 #     :5111 ~/ptyZZZ/serve.nu
 #
-# Flow:
-#   POST /input   -> append `pty.send`  (JSONL {t:input,b:..})  -> service stdin -> ptyZZZ
+# Panes: PTYZZZ_BINS is a comma-separated list of name=path pairs, one pty
+# pane per entry, rendered side by side. Unset, it serves one pane backed by
+# this repo's binary. Two engines head to head:
+#   PTYZZZ_BINS="wezterm=/a/ptyZZZ,rio=/b/ptyZZZ" http-nu ... serve.nu
+#
+# Flow, per pane <name>:
+#   POST /input?pane=<name> -> append `pty-<name>.send` -> service stdin
 #   ptyZZZ stdout -> service closure fans JSONL into frames:
-#     screen (keyframe) -> `pty.screen` (ttl last:1)    full grid; the join point
-#     diff              -> `pty.diff`   (ttl ephemeral) changed/appended/trimmed rows
+#     screen (keyframe) -> `pty-<name>.screen` (ttl last:1)    the join point
+#     diff              -> `pty-<name>.diff`   (ttl ephemeral) changed rows
 #
 # Diffs carry their payload in frame meta ({body: ...}), not the CAS. An
 # ephemeral frame is broadcast and never stored, so writing its content to the
 # CAS would be a disk write with no reader benefit -- benched at ~30us/frame
 # via CAS vs ~0.4us via meta, plus it saves a CAS read per subscriber per
 # frame on /sse. Keyframes stay in the CAS: stored (last:1), large, rare.
-#   GET  /sse     -> follow both topics, patch #grid
+#   GET  /sse     -> follow every pane's topics, patch by element id
 #
-# A joiner replays the stored keyframe and applies live diffs on top; any
-# missed diffs or delta bugs heal at the next keyframe (ptyZZZ emits one every
-# --keyframe-interval seconds while diffs are flowing, and on resize/alt-flip).
+# A joiner replays each pane's stored keyframe and applies live diffs on top;
+# any missed diffs or delta bugs heal at the next keyframe. The client routes
+# keystrokes to the focused pane (click to focus) and fits each pane's pty to
+# its own box via {t:resize}.
 
 use http-nu/datastar *
 use http-nu/router *
 
 const PTYZZZ = (path self | path dirname | path join "target" "release" "ptyZZZ")
 
+let panes = (
+  $env.PTYZZZ_BINS? | default $"local=($PTYZZZ)"
+  | split row ","
+  | each {|p|
+      let kv = $p | split row "=" | each { str trim }
+      {name: $kv.0, bin: $kv.1}
+    }
+)
+
 # Fail at load with a clear message rather than registering a service whose
 # spawn dies silently (the page would just sit at "connecting...").
-if not ($PTYZZZ | path exists) {
-  error make {msg: $"serve: missing binary, build it first: cargo build --release \(expected ($PTYZZZ))"}
+for p in $panes {
+  if not ($p.bin | path exists) {
+    error make {msg: $"serve: missing binary for pane ($p.name): ($p.bin)"}
+  }
 }
 
-# Register the pty service idempotently (needs --store + --services): append
-# xs.service.pty.create only if the stored definition is missing or changed.
-# Create frames are kept `forever` -- the runtime keeps the last known-good create
-# as its hot-replace fallback (lifecycle I3), and an already-confirmed service
-# resumes on every boot on its own (I2), so re-appending an identical create each
-# boot would just pile up cruft. (last:1 is for app data instead -- the pty.screen
-# and pty.exit output below.)
+# Register each pane's pty service idempotently (needs --store + --services):
+# append the create frame only if the stored definition is missing or changed.
+# Create frames are kept `forever` -- the runtime keeps the last known-good
+# create as its hot-replace fallback (lifecycle I3), and an already-confirmed
+# service resumes on every boot on its own (I2), so re-appending an identical
+# create each boot would just pile up cruft.
 def register-service [topic: string, config: string] {
   let last = (.last $topic)
   let current = if ($last | is-empty) { null } else { .cas $last.hash }
   if $current != $config { $config | .append $topic | ignore }
 }
 
-if ($HTTP_NU.store? | default null) != null and ($HTTP_NU.services? | default false) {
-  let closure = "{
+const SVC = '{
   run: {||
-    ^PTYBIN run -- nu
+    ^PTYBIN run --target TARGET -- nu
     | lines | each {|l|
         let e = try { $l | from json } catch { null }
         if $e == null { return }
         match $e.t {
-          'screen' => ( $e.html | .append 'pty.screen' --ttl last:1 )
-          'diff'   => ( null | .append 'pty.diff' --ttl ephemeral --meta {body: $l} )
-          'exit'   => ( {code: $e.code} | to json | .append 'pty.exit' --ttl last:1 )
+          "screen" => ( $e.html | .append "PFX.screen" --ttl last:1 )
+          "diff"   => ( null | .append "PFX.diff" --ttl ephemeral --meta {body: $l} )
+          "exit"   => ( {code: $e.code} | to json | .append "PFX.exit" --ttl last:1 )
           _ => null
         }
       } | ignore
   }
   duplex: true
-}"
-  register-service "xs.service.pty.create" ($closure | str replace "PTYBIN" $PTYZZZ)
+}'
+
+if ($HTTP_NU.store? | default null) != null and ($HTTP_NU.services? | default false) {
+  for p in $panes {
+    let closure = $SVC
+      | str replace --all "PTYBIN" $p.bin
+      | str replace --all "PFX" $"pty-($p.name)"
+      | str replace --all "TARGET" $"grid-($p.name)"
+    register-service $"xs.service.pty-($p.name).create" $closure
+  }
 }
 
-const PAGE = r#'<!doctype html>
+let topics = $panes | get name | each {|n| [$"pty-($n).screen" $"pty-($n).diff"] } | flatten
+let pane_names = $panes | get name
+
+const TMPL = r#'<!doctype html>
 <html><head><meta charset=utf-8>
 <script type=module src=DATASTAR></script>
 <style>
@@ -73,10 +99,15 @@ const PAGE = r#'<!doctype html>
     --c0:#000;--c1:#cd0000;--c2:#00cd00;--c3:#cdcd00;--c4:#1e90ff;--c5:#cd00cd;
     --c6:#00cdcd;--c7:#e5e5e5;--c8:#4d4d4d;--c9:#ff5454;--c10:#54ff54;--c11:#ffff54;
     --c12:#5454ff;--c13:#ff54ff;--c14:#54ffff;--c15:#fff;}
-  body{background:#000;color:var(--term-fg);margin:0;font:14px/1.2 monospace}
-  #grid{white-space:pre;padding:8px;background:var(--term-bg);position:relative;min-height:100vh;box-sizing:border-box}
+  body{background:#000;color:var(--term-fg);margin:0;font:14px/1.2 monospace;overflow:hidden}
+  #panes{display:flex;height:100vh}
+  .pane{flex:1;overflow-y:auto;background:var(--term-bg);position:relative}
+  .pane+.pane{border-left:1px solid #444}
+  .pane.focused .label{color:#fff;background:#333}
+  .label{position:sticky;top:0;z-index:1;font-size:11px;color:#888;background:#1a1a1a;padding:2px 8px}
+  [id^="grid-"]{white-space:pre;padding:8px;position:relative;box-sizing:border-box}
   .row{min-height:1.2em}
-  #grid a{color:inherit;text-decoration:underline}
+  .pane a{color:inherit;text-decoration:underline}
   .cursor{position:absolute;top:calc(8px + var(--cursor-row)*1.2em);left:calc(8px + var(--cursor-col)*1ch);
     width:1ch;height:1.2em;background:var(--term-fg);opacity:.4;pointer-events:none}
   .wc{display:inline-block;width:calc(var(--w)*1ch)}
@@ -88,8 +119,9 @@ const PAGE = r#'<!doctype html>
   .b5{background:var(--c5)}.b6{background:var(--c6)}.b7{background:var(--c7)}
 </style></head>
 <body data-init="@get('/sse')">
-  <div id=grid>connecting...</div>
+  <div id=panes>__PANES_HTML__</div>
   <script type=module>
+    const PANES = __PANES_JS__;
     // The client is byte-blind: it ships semantic key events and the
     // emulator encodes them against its live input modes (application
     // cursor keys, bracketed paste, ...). See PROTOCOL.md {t:key}/{t:paste}.
@@ -115,24 +147,36 @@ const PAGE = r#'<!doctype html>
       }
       return null;
     }
-    // Awaited send queue: at most one POST in flight, so frames reach the
-    // server in press order by construction. While one is in flight the
-    // backlog accumulates and drains as a single NDJSON batch, capping the
-    // added delay at one round trip regardless of typing speed.
-    let queue = [], sending = false;
-    function send(frame) {
-      queue.push(JSON.stringify(frame));
-      drain();
+    // Awaited send queue, one per pane: at most one POST in flight, so
+    // frames reach the server in press order by construction. While one is
+    // in flight the backlog accumulates and drains as a single NDJSON
+    // batch, capping the added delay at one round trip.
+    const queues = {};
+    function send(pane, frame) {
+      const s = queues[pane] ??= {items: [], sending: false};
+      s.items.push(JSON.stringify(frame));
+      drain(pane);
     }
-    async function drain() {
-      if (sending) return;
-      sending = true;
-      while (queue.length) {
-        const batch = queue.splice(0).join("\n") + "\n";
-        try { await fetch("/input", {method:"POST", body: batch}); } catch {}
+    async function drain(pane) {
+      const s = queues[pane];
+      if (s.sending) return;
+      s.sending = true;
+      while (s.items.length) {
+        const batch = s.items.splice(0).join("\n") + "\n";
+        try { await fetch("/input?pane=" + pane, {method:"POST", body: batch}); } catch {}
       }
-      sending = false;
+      s.sending = false;
     }
+    // Focus: keystrokes go to the clicked pane.
+    let focused = PANES[0];
+    function setFocus(name) {
+      focused = name;
+      document.querySelectorAll(".pane").forEach(p =>
+        p.classList.toggle("focused", p.dataset.pane === name));
+    }
+    document.querySelectorAll(".pane").forEach(p =>
+      p.addEventListener("mousedown", () => setFocus(p.dataset.pane)));
+    setFocus(focused);
     addEventListener("keydown", ev => {
       // Composing keydowns (dead keys, IME) are provisional; skip them.
       if (ev.isComposing || ev.keyCode === 229) return;
@@ -147,38 +191,14 @@ const PAGE = r#'<!doctype html>
       const frame = keyEvent(ev);
       if (frame === null) return;
       ev.preventDefault();
-      send(frame);
+      send(focused, frame);
     });
     addEventListener("paste", ev => {
       const text = ev.clipboardData?.getData("text");
       if (!text) return;
       ev.preventDefault();
-      send({t:"paste", s:text});
+      send(focused, {t:"paste", s:text});
     });
-    // Fit the pty to the window: measure one rendered line box from a
-    // probe row (inherits the grid font and 1.2 line-height), derive
-    // cols/rows from the viewport minus the grid padding, and send
-    // {t:resize} when the geometry changes. Note every open tab does
-    // this, so the last viewer to resize wins, like tmux.
-    function fit() {
-      const grid = document.getElementById("grid");
-      const probe = document.createElement("div");
-      probe.textContent = "M".repeat(40);
-      probe.style.cssText = "position:absolute;visibility:hidden;white-space:pre";
-      grid.appendChild(probe);
-      const r = probe.getBoundingClientRect();
-      grid.removeChild(probe);
-      if (r.width === 0 || r.height === 0) return;
-      const cols = Math.max(20, Math.floor((grid.clientWidth - 16) / (r.width / 40)));
-      const rows = Math.max(5, Math.floor((innerHeight - 16) / r.height));
-      if (cols !== fit.cols || rows !== fit.rows) {
-        fit.cols = cols; fit.rows = rows;
-        send({t:"resize", cols, rows});
-      }
-    }
-    let fitTimer;
-    addEventListener("resize", () => { clearTimeout(fitTimer); fitTimer = setTimeout(fit, 200); });
-    fit();
     document.addEventListener("copy", ev => {
       // Rows are space-padded to full width; strip trailing whitespace
       // per line so copies match what a terminal emulator would yield.
@@ -189,17 +209,61 @@ const PAGE = r#'<!doctype html>
       ev.clipboardData?.setData("text/plain", trimmed);
       ev.preventDefault();
     });
-    // follow the tail like a terminal, but let the user scroll back through
-    // history undisturbed; resume following when they return to the bottom
-    let follow = true;
-    addEventListener("scroll", () => {
-      follow = innerHeight + scrollY >= document.body.scrollHeight - 48;
+    // Fit each pty to its pane: measure one rendered line box from a probe
+    // row (inherits the pane font and 1.2 line-height), derive cols/rows
+    // from the pane box, and send {t:resize} when the geometry changes.
+    // Every open tab does this, so the last viewer to resize wins.
+    const lastFit = {};
+    function fit() {
+      for (const name of PANES) {
+        const pane = document.querySelector(`.pane[data-pane=${name}]`);
+        if (!pane) continue;
+        const probe = document.createElement("div");
+        probe.textContent = "M".repeat(40);
+        probe.style.cssText = "position:absolute;visibility:hidden;white-space:pre";
+        pane.appendChild(probe);
+        const r = probe.getBoundingClientRect();
+        pane.removeChild(probe);
+        if (r.width === 0 || r.height === 0) continue;
+        const labelH = pane.querySelector(".label")?.offsetHeight ?? 0;
+        const cols = Math.max(20, Math.floor((pane.clientWidth - 16) / (r.width / 40)));
+        const rows = Math.max(5, Math.floor((pane.clientHeight - labelH - 16) / r.height));
+        const prev = lastFit[name];
+        if (!prev || prev.cols !== cols || prev.rows !== rows) {
+          lastFit[name] = {cols, rows};
+          send(name, {t:"resize", cols, rows});
+        }
+      }
+    }
+    let fitTimer;
+    addEventListener("resize", () => { clearTimeout(fitTimer); fitTimer = setTimeout(fit, 200); });
+    fit();
+    // Follow each pane's tail like a terminal, but let the user scroll back
+    // undisturbed; resume following when they return to the bottom.
+    const follow = {};
+    document.querySelectorAll(".pane").forEach(p => {
+      follow[p.dataset.pane] = true;
+      p.addEventListener("scroll", () => {
+        follow[p.dataset.pane] = p.scrollTop + p.clientHeight >= p.scrollHeight - 48;
+      });
     });
     new MutationObserver(() => {
-      if (follow) scrollTo(0, document.body.scrollHeight);
+      document.querySelectorAll(".pane").forEach(p => {
+        if (follow[p.dataset.pane]) p.scrollTop = p.scrollHeight;
+      });
     }).observe(document.body, {childList: true, subtree: true});
   </script>
 </body></html>'#
+
+let PAGE = (
+  $TMPL
+  | str replace "__PANES_HTML__" (
+      $panes | each {|p|
+        $"<div class=pane data-pane=($p.name)><div class=label>($p.name)</div><div id=grid-($p.name)>connecting...</div></div>"
+      } | str join ""
+    )
+  | str replace "__PANES_JS__" ($pane_names | to json --raw)
+)
 
 {|req|
   dispatch $req [
@@ -207,15 +271,16 @@ const PAGE = r#'<!doctype html>
       $PAGE | str replace "DATASTAR" $DATASTAR_JS_PATH | metadata set --content-type "text/html"
     })
 
-    # One stream: the stored keyframe replays first (last:1), then live frames.
-    # A keyframe is one morph of #grid. A diff expands to up to three patch
-    # events: changed rows + cursor (morph by id), appended rows (append into
-    # the grid), trimmed rows (remove by id).
+    # One stream for every pane: each stored keyframe replays first
+    # (last:1), then live frames. A keyframe is one morph of its pane's
+    # grid div. A diff expands to up to three patch events: changed rows +
+    # cursor (morph by id), appended rows (append into the pane's grid),
+    # trimmed rows (remove by id).
     (route {method: "GET", path: "/sse"} {|req ctx|
       .cat --follow
-      | where topic in ["pty.screen" "pty.diff"]
+      | where topic in $topics
       | each {|f|
-          if $f.topic == "pty.screen" {
+          if ($f.topic | str ends-with ".screen") {
             [(.cas $f.hash | to datastar-patch-elements)]
           } else {
             let d = $f.meta.body | from json
@@ -236,17 +301,23 @@ const PAGE = r#'<!doctype html>
     })
 
     # The body is one or more ptyZZZ command frames as NDJSON ({t:key},
-    # {t:paste}, {t:input}, {t:resize}), passed through verbatim; the client
-    # batches queued frames into one POST. See PROTOCOL.md.
+    # {t:paste}, {t:input}, {t:resize}), passed through verbatim to the
+    # pane's service; the client batches queued frames into one POST.
     (route {method: "POST", path: "/input"} {|req ctx|
       let body = $in | into string | str trim --right --char "\n"
-      $body + "\n" | .append "pty.send" | ignore
-      null | metadata set { merge {'http.response': {status: 204}} }
+      let pane = $req.query?.pane? | default $pane_names.0
+      if $pane in $pane_names {
+        $body + "\n" | .append $"pty-($pane).send" | ignore
+        null | metadata set { merge {'http.response': {status: 204}} }
+      } else {
+        "unknown pane" | metadata set { merge {'http.response': {status: 400}} }
+      }
     })
 
-    # Probe helper: current keyframe html as text/plain.
+    # Probe helper: a pane's current keyframe html as text/plain.
     (route {method: "GET", path: "/snap"} {|req ctx|
-      let f = .last "pty.screen"
+      let pane = $req.query?.pane? | default $pane_names.0
+      let f = .last $"pty-($pane).screen"
       if ($f | is-empty) { "no screen yet" } else { .cas $f.hash } | metadata set --content-type "text/plain"
     })
   ]
