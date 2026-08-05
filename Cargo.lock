@@ -538,6 +538,7 @@ dependencies = [
  "brotli",
  "clap",
  "portable-pty",
+ "regex",
  "rio-vt",
  "serde",
  "serde_json",

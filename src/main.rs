@@ -9,11 +9,14 @@
 //! rio's viewport damage covers the line; re-rendered rows are byte-compared
 //! against the cache so output that changes nothing visible emits nothing.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{BufRead, Read, Write};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
+
+use regex::Regex;
 
 use clap::Parser;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
@@ -411,7 +414,20 @@ impl EmitState {
             return None;
         }
 
-        // Render damaged rows into the cache. A row whose new html matches the
+        // The rows to render, as a distinct ordered set. Implicit-URL
+        // detection widens it to whole logical lines: a URL wrapped across
+        // the right edge re-links every row it spans when any of them
+        // changes, and the row cache byte-compare drops the rows whose html
+        // came out identical.
+        let mut to_render: BTreeSet<StableRow> = if forced {
+            (base..max).collect()
+        } else {
+            damaged.iter().chain(appended.iter()).copied().collect()
+        };
+        let links = scan_links(term, base, history, total, &mut to_render);
+        let no_links: LinkSpans = Vec::new();
+
+        // Render the set into the cache. A row whose new html matches the
         // cache byte-for-byte was touched but not visibly changed (a prompt
         // redraw writing identical cells); drop it from the diff.
         let styles = &term.grid.style_set;
@@ -419,26 +435,20 @@ impl EmitState {
         let mut changed: Vec<StableRow> = Vec::new();
         if forced {
             self.cache.clear();
-            for phys in 0..total {
-                let stable = base + phys as StableRow;
-                let line = &term.grid[Line(phys as i32 - history as i32)];
-                let mut html = String::with_capacity(64);
-                render_row_into(&mut html, &self.target, line, styles, extras, cols, stable);
-                self.cache.insert(stable, html);
-            }
         } else {
             self.cache = self.cache.split_off(&base);
-            for &stable in damaged.iter().chain(appended.iter()) {
-                let phys = (stable - base) as usize;
-                let line = &term.grid[Line(phys as i32 - history as i32)];
-                let mut html = String::with_capacity(64);
-                render_row_into(&mut html, &self.target, line, styles, extras, cols, stable);
-                let fresh = self.cache.get(&stable) != Some(&html);
-                if fresh {
-                    self.cache.insert(stable, html);
-                    if stable < self.last_max {
-                        changed.push(stable);
-                    }
+        }
+        for &stable in &to_render {
+            let phys = (stable - base) as usize;
+            let line = &term.grid[Line(phys as i32 - history as i32)];
+            let row_links = links.get(&stable).unwrap_or(&no_links);
+            let mut html = String::with_capacity(64);
+            render_row_into(&mut html, &self.target, line, styles, extras, cols, stable, row_links);
+            let fresh = self.cache.get(&stable) != Some(&html);
+            if fresh {
+                self.cache.insert(stable, html);
+                if !forced && stable < self.last_max {
+                    changed.push(stable);
                 }
             }
         }
@@ -520,6 +530,253 @@ fn safe_href(uri: &str) -> Option<&str> {
         .iter()
         .any(|p| u.len() >= p.len() && u.as_bytes()[..p.len()].eq_ignore_ascii_case(p.as_bytes()));
     ok.then_some(u)
+}
+
+// --- hyperlinks: implicit-URL scan -------------------------------------------
+// rio has no equivalent of wezterm's rule scan, so it is hand-rolled here at
+// render time: build each logical line's text, match the same rules main uses
+// on wezterm, and map the byte ranges back to per-row column spans that
+// render_row_into consults. The grid itself is never mutated.
+
+/// Per-row link spans: `[start_col, end_col)` -> href, ascending, disjoint.
+type LinkSpans = Vec<(usize, usize, Rc<String>)>;
+
+struct LinkMatch {
+    /// byte range of the linked text (the rule's highlight group)
+    range: std::ops::Range<usize>,
+    uri: Rc<String>,
+}
+
+/// URL detection over one line of text: wezterm's `default_hyperlink_rules`
+/// set, rebuilt on the `regex` crate. The two bare-URL patterns are copied
+/// verbatim from wezterm-surface (`CLOSING_PARENTHESIS_HYPERLINK_PATTERN`,
+/// `GENERIC_HYPERLINK_PATTERN`); the closing-paren rule's `(?=...)` lookahead
+/// has no `regex`-crate equivalent and is emulated in `paren_backtrack`.
+///
+/// The bracket rules link the URL without its surrounding `()`/`[]`/`<>`
+/// (capture group 1 is the highlighted range). The generic pattern ends in
+/// `[_/a-zA-Z0-9-]`, so trailing prose punctuation (`.`, `,`, `)`) is left
+/// out of the link while a real trailing `/` or `-` is kept -- and it has no
+/// TLD requirement, so `http://localhost:8080` links too.
+fn implicit_matches(text: &str) -> Vec<LinkMatch> {
+    struct ImplicitRule {
+        regex: Regex,
+        /// capture group whose range gets linked
+        group: usize,
+        /// glued onto the matched text to form the URI
+        prefix: &'static str,
+        /// emulate wezterm's closing-paren lookahead
+        paren: bool,
+    }
+    static RULES: OnceLock<Vec<ImplicitRule>> = OnceLock::new();
+    let rules = RULES.get_or_init(|| {
+        let rule = |re: &str, group: usize, prefix: &'static str, paren: bool| ImplicitRule {
+            regex: Regex::new(re).unwrap(),
+            group,
+            prefix,
+            paren,
+        };
+        vec![
+            // URLs wrapped in brackets: link the inner URL, not the bracket.
+            rule(r"\((\w+://\S+)\)", 1, "", false),
+            rule(r"\[(\w+://\S+)\]", 1, "", false),
+            rule(r"<(\w+://\S+)>", 1, "", false),
+            // Bare URLs: balanced closing paren, then the generic form.
+            // wezterm: \b\w+://[^\s()]*\(\S*\)(?=\s|$|[^_/a-zA-Z0-9-])
+            rule(r"\b\w+://[^\s()]*\(\S*\)", 0, "", true),
+            // wezterm: GENERIC_HYPERLINK_PATTERN
+            rule(r"\b\w+://\S+[_/a-zA-Z0-9-]", 0, "", false),
+            // Implicit mailto.
+            rule(r"\b\w+@[\w-]+(\.[\w-]+)+\b", 0, "mailto:", false),
+        ]
+    });
+    let mut out: Vec<LinkMatch> = Vec::new();
+    for rule in rules {
+        for caps in rule.regex.captures_iter(text) {
+            let Some(m) = caps.get(rule.group) else { continue };
+            let (start, mut end) = (m.start(), m.end());
+            if rule.paren {
+                let Some(e) = paren_backtrack(text, start, end) else { continue };
+                end = e;
+            }
+            out.push(LinkMatch {
+                range: start..end,
+                uri: Rc::new(format!("{}{}", rule.prefix, &text[start..end])),
+            });
+        }
+    }
+    // Longest match first: where matches overlap, a cell takes the first
+    // match that covers it, so the longer one wins -- same ordering wezterm
+    // uses (sort by descending length, never replace an assigned link).
+    out.sort_by(|a, b| b.range.len().cmp(&a.range.len()));
+    out
+}
+
+/// True if the char after `end` satisfies wezterm's closing-paren lookahead
+/// `\s|$|[^_/a-zA-Z0-9-]`.
+fn lookahead_ok(text: &str, end: usize) -> bool {
+    match text[end..].chars().next() {
+        None => true,
+        Some(c) => {
+            c.is_whitespace() || !(c == '_' || c == '/' || c == '-' || c.is_ascii_alphanumeric())
+        }
+    }
+}
+
+/// Emulate the lookahead of `\b\w+://[^\s()]*\(\S*\)(?=\s|$|[^_/a-zA-Z0-9-])`
+/// on the greedy (lookahead-free) match: like a backtracking engine, shrink
+/// `\S*` so the match ends at the last `)` after the opening `(` whose
+/// following char passes the lookahead. None if no end position qualifies.
+fn paren_backtrack(text: &str, start: usize, greedy_end: usize) -> Option<usize> {
+    let first_paren = text[start..greedy_end].find('(')? + start;
+    let mut end = greedy_end; // just past a ')' by construction
+    loop {
+        if lookahead_ok(text, end) {
+            return Some(end);
+        }
+        let prev = text[first_paren + 1..end - 1].rfind(')')?;
+        end = first_paren + 1 + prev + 1;
+    }
+}
+
+/// For each logical line (physical rows joined over trailing wrapline flags)
+/// touching `to_render`, build its text, prefilter for `://` or `@` (URL-free
+/// output -- the common case -- pays a substring check instead of six
+/// regexes), run the rules, and record per-row column spans. Rows pulled in
+/// only by wrap joining are added to `to_render` so a link that grows or
+/// breaks re-renders every row it spans.
+fn scan_links(
+    term: &Term,
+    base: StableRow,
+    history: usize,
+    total: usize,
+    to_render: &mut BTreeSet<StableRow>,
+) -> HashMap<StableRow, LinkSpans> {
+    let mut links: HashMap<StableRow, LinkSpans> = HashMap::new();
+    if total == 0 {
+        return links;
+    }
+    let max = base + total as StableRow;
+    let line_of = |s: StableRow| Line((s - base) as i32 - history as i32);
+    let wraps = |s: StableRow| {
+        let row = &term.grid[line_of(s)];
+        row.inner.last().is_some_and(|sq| sq.wrapline())
+    };
+    // Logical spans are disjoint and scanned in ascending order, so anything
+    // below `scanned_hi` is already covered.
+    let mut scanned_hi: StableRow = 0;
+    for stable in to_render.clone() {
+        if stable < base || stable >= max || stable < scanned_hi {
+            continue;
+        }
+        let mut lo = stable;
+        while lo > base && wraps(lo - 1) {
+            lo -= 1;
+        }
+        let mut hi = stable;
+        while hi + 1 < max && wraps(hi) {
+            hi += 1;
+        }
+        scanned_hi = hi + 1;
+        scan_logical_line(term, &line_of, lo, hi, &mut links);
+        for s in lo..=hi {
+            to_render.insert(s);
+        }
+    }
+    links
+}
+
+/// Scan one logical line: concatenate the member rows' text (mirroring what
+/// render_row_into emits: base char, grapheme extras, blanks as spaces, wide
+/// spacers skipped), match, and compress per-cell assignments into spans.
+fn scan_logical_line(
+    term: &Term,
+    line_of: &impl Fn(StableRow) -> Line,
+    lo: StableRow,
+    hi: StableRow,
+    links: &mut HashMap<StableRow, LinkSpans>,
+) {
+    // Cheap prefilter straight off the cells, so URL-free lines (the common
+    // case) skip the text + byte-map build as well as the regexes.
+    let mut candidate = false;
+    let mut run = 0u8; // chars of "://" matched so far
+    'scan: for s in lo..=hi {
+        let row = &term.grid[line_of(s)];
+        for sq in &row.inner {
+            let ch = sq.c();
+            if ch == '@' {
+                candidate = true;
+                break 'scan;
+            }
+            run = match (run, ch) {
+                (1, '/') => 2,
+                (2, '/') => {
+                    candidate = true;
+                    break 'scan;
+                }
+                (_, ':') => 1,
+                _ => 0,
+            };
+        }
+    }
+    if !candidate {
+        return;
+    }
+
+    let mut text = String::new();
+    // (stable, col, width, byte offset of this cell's text)
+    let mut cells: Vec<(StableRow, usize, usize, usize)> = Vec::new();
+    for s in lo..=hi {
+        let row = &term.grid[line_of(s)];
+        let mut expected = 0usize;
+        for col in 0..row.inner.len() {
+            if col < expected {
+                continue;
+            }
+            let sq = row.inner[col];
+            let width = match sq.wide() {
+                Wide::Wide => 2,
+                _ => 1,
+            };
+            expected = col + width;
+            cells.push((s, col, width, text.len()));
+            let ch = sq.c();
+            text.push(if ch == '\0' { ' ' } else { ch });
+            if matches!(sq.content_tag(), ContentTag::Codepoint) && sq.has_grapheme() {
+                if let Some(ex) = sq.extras_id().and_then(|id| term.grid.extras_table.get(id)) {
+                    text.extend(ex.zerowidth.iter());
+                }
+            }
+        }
+    }
+    let matches = implicit_matches(&text);
+    if matches.is_empty() {
+        return;
+    }
+    // (stable, start_col, end_col, match index) of the span being grown
+    let mut cur: Option<(StableRow, usize, usize, usize)> = None;
+    let mut flush = |cur: &mut Option<(StableRow, usize, usize, usize)>| {
+        if let Some((cs, start, end, ci)) = cur.take() {
+            links
+                .entry(cs)
+                .or_default()
+                .push((start, end, matches[ci].uri.clone()));
+        }
+    };
+    for &(s, col, width, byte) in &cells {
+        let m = matches.iter().position(|m| m.range.contains(&byte));
+        match (cur, m) {
+            (Some((cs, start, end, ci)), Some(mi)) if cs == s && ci == mi && end == col => {
+                cur = Some((cs, start, col + width, ci));
+            }
+            (_, Some(mi)) => {
+                flush(&mut cur);
+                cur = Some((s, col, col + width, mi));
+            }
+            (_, None) => flush(&mut cur),
+        }
+    }
+    flush(&mut cur);
 }
 
 // --- render ------------------------------------------------------------------
@@ -724,12 +981,14 @@ fn render_row_into(
     extras: &ExtrasTable,
     cols: usize,
     stable: StableRow,
+    links: &LinkSpans,
 ) {
     let _ = write!(out, "<div class=\"row\" id=\"{target}-r-{stable}\">");
     let ncols = cols.min(row.inner.len());
     let mut expected = 0usize;
     let mut pending_blanks = 0usize;
     let mut cluster = String::new();
+    let mut li = 0usize; // cursor into the ascending link spans
     // Some(close_tag) while a wrapper is open; run identity is paint + href.
     let mut open: Option<&'static str> = None;
     let mut run: Option<(Paint, Option<&str>)> = None;
@@ -751,7 +1010,7 @@ fn render_row_into(
         // table; the cell itself only carries the base char and an id.
         // bg-only cells reuse the extras bits for color, so gate on tag.
         cluster.clear();
-        let mut href: Option<&str> = None;
+        let mut raw_href: Option<&str> = None;
         if matches!(sq.content_tag(), ContentTag::Codepoint) && sq.has_extras() {
             if let Some(ex) = sq.extras_id().and_then(|id| extras.get(id)) {
                 if sq.has_grapheme() {
@@ -759,10 +1018,23 @@ fn render_row_into(
                     cluster.extend(ex.zerowidth.iter());
                 }
                 if sq.has_hyperlink() {
-                    href = ex.hyperlink.as_ref().and_then(|h| safe_href(h.uri()));
+                    raw_href = ex.hyperlink.as_ref().map(|h| h.uri());
                 }
             }
         }
+        // An explicit OSC 8 link wins over an implicit match, even when its
+        // scheme fails the allowlist below (wezterm never overwrites an
+        // existing link either).
+        while li < links.len() && links[li].1 <= col {
+            li += 1;
+        }
+        if raw_href.is_none() {
+            raw_href = links
+                .get(li)
+                .filter(|(start, _, _)| *start <= col)
+                .map(|(_, _, uri)| uri.as_str());
+        }
+        let href = raw_href.and_then(safe_href);
 
         let plain = href.is_none() && paint == Paint::Style(DEFAULT_STYLE_ID);
         if plain && width == 1 && cluster.is_empty() && (ch == ' ' || ch == '\0') {
