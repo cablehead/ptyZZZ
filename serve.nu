@@ -30,6 +30,7 @@
 use http-nu/datastar *
 use http-nu/router *
 
+const HERE = (path self | path dirname)
 const PTYZZZ = (path self | path dirname | path join "target" "release" "ptyZZZ")
 
 let panes = (
@@ -95,11 +96,19 @@ const TMPL = r#'<!doctype html>
 <html><head><meta charset=utf-8>
 <script type=module src=DATASTAR></script>
 <style>
-  :root{--term-bg:#111;--term-fg:#ddd;
+  /* Vendored JetBrains Mono NL Nerd Font (Mono variant: single-width
+     icons, no ligatures). A complete monospace face with box-drawing,
+     block, powerline, and Nerd Font icon glyphs all at uniform advance,
+     so grid geometry never depends on the OS fallback font. */
+  @font-face{font-family:"JetBrainsMonoNerd";font-weight:normal;font-style:normal;font-display:swap;
+    src:url("/fonts/JetBrainsMonoNLNerdFontMono-Regular.woff2") format("woff2")}
+  @font-face{font-family:"JetBrainsMonoNerd";font-weight:bold;font-style:normal;font-display:swap;
+    src:url("/fonts/JetBrainsMonoNLNerdFontMono-Bold.woff2") format("woff2")}
+  :root{--term-font:"JetBrainsMonoNerd",monospace;--term-bg:#111;--term-fg:#ddd;
     --c0:#000;--c1:#cd0000;--c2:#00cd00;--c3:#cdcd00;--c4:#1e90ff;--c5:#cd00cd;
     --c6:#00cdcd;--c7:#e5e5e5;--c8:#4d4d4d;--c9:#ff5454;--c10:#54ff54;--c11:#ffff54;
     --c12:#5454ff;--c13:#ff54ff;--c14:#54ffff;--c15:#fff;}
-  body{background:#000;color:var(--term-fg);margin:0;font:14px/1.2 monospace;overflow:hidden}
+  body{background:#000;color:var(--term-fg);margin:0;font:14px/1.2 var(--term-font);overflow:hidden}
   #panes{display:flex;height:100vh}
   .pane{flex:1;display:flex;flex-direction:column;background:var(--term-bg)}
   .pane+.pane{border-left:1px solid #444}
@@ -323,6 +332,9 @@ const TMPL = r#'<!doctype html>
       let fitTimer;
       addEventListener("resize", () => { clearTimeout(fitTimer); fitTimer = setTimeout(fit, 200); });
       fit();
+      // font-display:swap means the first fit may have measured the
+      // fallback font; re-measure once the real face is loaded.
+      document.fonts.ready.then(fit);
     }
     // Follow the cursor like a terminal, not the last grid row: after a
     // clear the prompt sits at the top of the screen region with blank
@@ -412,6 +424,11 @@ let PAGE = (
       } else {
         "unknown pane" | metadata set { merge {'http.response': {status: 400}} }
       }
+    })
+
+    # Vendored terminal font. .static sets the content-type.
+    (route {method: "GET", path-matches: "/fonts/:file"} {|req ctx|
+      .static ($HERE | path join "static" "fonts") $"/($ctx.file)"
     })
 
     # Probe helper: a pane's current keyframe html as text/plain.
