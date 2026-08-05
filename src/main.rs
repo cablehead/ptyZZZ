@@ -83,8 +83,273 @@ enum Sub {
 #[derive(Deserialize)]
 #[serde(tag = "t", rename_all = "lowercase")]
 enum Cmd {
+    /// raw bytes to the pty (composed IME text, tests, escape hatches)
     Input { b: String },
+    /// a semantic key event; the emulator encodes it per its current modes
+    /// (application cursor keys, newline mode, ...)
+    Key {
+        key: String,
+        #[serde(default)]
+        mods: u8,
+    },
+    /// pasted text; wrapped in bracketed-paste markers when the app enabled them
+    Paste { s: String },
     Resize { cols: u16, rows: u16 },
+}
+
+// --- semantic key encoding ---------------------------------------------------
+// rio has no key_down/send_paste; this hand-rolled encoder mirrors wezterm's
+// termwiz legacy path (encoding=Xterm, modifyOtherKeys off) so the two ports
+// emit identical bytes for the same {t:"key"} frames. Modes honored: DECCKM
+// (APP_CURSOR -> SS3 arrows/Home/End), LNM (LINE_FEED_NEW_LINE -> Enter sends
+// CRLF), and bracketed paste. Gap: rio also tracks modifyOtherKeys levels
+// (`modify_other_keys()`) and the kitty keyboard protocol (`keyboard_mode()`);
+// apps that enable those get the legacy sequences below, which both protocols
+// specify as the fallback for un-upgraded keys.
+
+/// Browser `KeyboardEvent.key` name -> semantic key. Single chars pass
+/// through; named keys cover the editing/navigation cluster and F1-F24.
+#[derive(Clone, Copy, PartialEq)]
+enum Key {
+    Char(char),
+    Up,
+    Down,
+    Left,
+    Right,
+    Home,
+    End,
+    PageUp,
+    PageDown,
+    Insert,
+    Delete,
+    Enter,
+    Tab,
+    Backspace,
+    Escape,
+    Function(u8),
+}
+
+fn parse_key(k: &str) -> Option<Key> {
+    let mut chars = k.chars();
+    if let (Some(c), None) = (chars.next(), chars.next()) {
+        return Some(Key::Char(c));
+    }
+    Some(match k {
+        "ArrowUp" => Key::Up,
+        "ArrowDown" => Key::Down,
+        "ArrowLeft" => Key::Left,
+        "ArrowRight" => Key::Right,
+        "Home" => Key::Home,
+        "End" => Key::End,
+        "PageUp" => Key::PageUp,
+        "PageDown" => Key::PageDown,
+        "Insert" => Key::Insert,
+        "Delete" => Key::Delete,
+        "Enter" => Key::Enter,
+        "Tab" => Key::Tab,
+        "Backspace" => Key::Backspace,
+        "Escape" => Key::Escape,
+        _ => {
+            let n = k.strip_prefix('F')?.parse::<u8>().ok()?;
+            if n == 0 || n > 24 {
+                return None;
+            }
+            Key::Function(n)
+        }
+    })
+}
+
+/// Client modifier bits: 1 shift, 2 alt, 4 ctrl, 8 meta. Meta parses but
+/// does not encode; xterm's modifier parameter has no slot wezterm emits
+/// for it either.
+#[derive(Clone, Copy)]
+struct Mods {
+    shift: bool,
+    alt: bool,
+    ctrl: bool,
+}
+
+impl Mods {
+    fn from_bits(bits: u8) -> Self {
+        Self {
+            shift: bits & 1 != 0,
+            alt: bits & 2 != 0,
+            ctrl: bits & 4 != 0,
+        }
+    }
+    /// xterm modifier value: shift 1, alt 2, ctrl 4.
+    fn xterm(self) -> u8 {
+        (self.shift as u8) | ((self.alt as u8) << 1) | ((self.ctrl as u8) << 2)
+    }
+}
+
+/// Ctrl+key -> control byte (wezterm-input-types' table).
+fn ctrl_mapping(c: char) -> Option<char> {
+    Some(match c {
+        '@' | '`' | ' ' | '2' => '\x00',
+        'a'..='z' => ((c as u8) - b'a' + 1) as char,
+        'A'..='Z' => ((c as u8) - b'A' + 1) as char,
+        '[' | '3' | '{' => '\x1b',
+        '\\' | '4' | '|' => '\x1c',
+        ']' | '5' | '}' => '\x1d',
+        '^' | '6' | '~' => '\x1e',
+        '_' | '7' | '/' => '\x1f',
+        '8' | '?' => '\x7f',
+        _ => return None,
+    })
+}
+
+/// Encode a key event against the terminal's live modes, mirroring wezterm's
+/// termwiz `KeyCode::encode` legacy path arm for arm.
+fn encode_key(key: Key, mut mods: Mods, mode: Mode) -> String {
+    let mut buf = String::new();
+    // Shift+letter arrives as the shifted char; normalize, and drop the
+    // shift bit for chars that already carry it so it can't re-encode as a
+    // CSI modifier.
+    let key = match key {
+        Key::Char(c) if mods.shift && c.is_ascii_lowercase() => {
+            Key::Char(c.to_ascii_uppercase())
+        }
+        k => k,
+    };
+    if let Key::Char(c) = key {
+        if mods.shift && (c.is_ascii_punctuation() || c.is_ascii_uppercase()) {
+            mods.shift = false;
+        }
+    }
+    match key {
+        Key::Char(c) if mods.ctrl && ctrl_mapping(c).is_some() => {
+            if mods.alt {
+                buf.push('\x1b');
+            }
+            buf.push(ctrl_mapping(c).unwrap());
+        }
+        Key::Char(c) => {
+            // Alt prefixes ESC; ctrl without a control mapping (e.g. Ctrl+1)
+            // and meta-only chords send the char unchanged, like wezterm.
+            if mods.alt {
+                buf.push('\x1b');
+            }
+            buf.push(c);
+        }
+        Key::Enter | Key::Escape => {
+            let c = if key == Key::Enter { '\r' } else { '\x1b' };
+            if mods.alt {
+                buf.push('\x1b');
+            }
+            buf.push(c);
+            // LNM: Enter sends CRLF. wezterm skips the LF when shift/ctrl
+            // are held (its csi-u branch); preserve that quirk.
+            if key == Key::Enter
+                && !mods.shift
+                && !mods.ctrl
+                && mode.contains(Mode::LINE_FEED_NEW_LINE)
+            {
+                buf.push('\n');
+            }
+        }
+        Key::Tab => {
+            if mods.alt {
+                buf.push('\x1b');
+            }
+            match (mods.ctrl, mods.shift) {
+                (true, false) => buf.push_str("\x1b[9;5u"), // wezterm's legacy quirk
+                (true, true) => buf.push_str("\x1b[1;5Z"),
+                (false, true) => buf.push_str("\x1b[Z"),
+                (false, false) => buf.push('\t'),
+            }
+        }
+        Key::Backspace => {
+            // VERASE is DEL; BS only when ctrl is held.
+            if mods.alt {
+                buf.push('\x1b');
+            }
+            buf.push(if mods.ctrl { '\x08' } else { '\x7f' });
+        }
+        Key::Up | Key::Down | Key::Right | Key::Left | Key::Home | Key::End => {
+            let c = match key {
+                Key::Up => 'A',
+                Key::Down => 'B',
+                Key::Right => 'C',
+                Key::Left => 'D',
+                Key::Home => 'H',
+                Key::End => 'F',
+                _ => unreachable!(),
+            };
+            if mods.xterm() != 0 {
+                let _ = write!(buf, "\x1b[1;{}{c}", 1 + mods.xterm());
+            } else if mode.contains(Mode::APP_CURSOR) {
+                let _ = write!(buf, "\x1bO{c}");
+            } else {
+                let _ = write!(buf, "\x1b[{c}");
+            }
+        }
+        Key::Insert | Key::Delete | Key::PageUp | Key::PageDown => {
+            let n = match key {
+                Key::Insert => 2,
+                Key::Delete => 3,
+                Key::PageUp => 5,
+                Key::PageDown => 6,
+                _ => unreachable!(),
+            };
+            if mods.xterm() != 0 {
+                let _ = write!(buf, "\x1b[{n};{}~", 1 + mods.xterm());
+            } else {
+                let _ = write!(buf, "\x1b[{n}~");
+            }
+        }
+        Key::Function(n @ 1..=4) => {
+            let c = [b'P', b'Q', b'R', b'S'][n as usize - 1] as char;
+            if mods.xterm() == 0 {
+                let _ = write!(buf, "\x1bO{c}");
+            } else {
+                let _ = write!(buf, "\x1b[1;{}{c}", 1 + mods.xterm());
+            }
+        }
+        Key::Function(n) => {
+            const INTRO: [u8; 20] = [
+                15, 17, 18, 19, 20, 21, 23, 24, 25, 26, 28, 29, 31, 32, 33, 34, 42, 43, 44, 45,
+            ];
+            let code = INTRO[n as usize - 5]; // parse_key caps n at 24
+            if mods.xterm() == 0 {
+                let _ = write!(buf, "\x1b[{code}~");
+            } else {
+                let _ = write!(buf, "\x1b[{code};{}~", 1 + mods.xterm());
+            }
+        }
+    }
+    buf
+}
+
+/// Encode pasted text: bracketed-paste wrapped when the app enabled DECSET
+/// 2004, otherwise newlines canonicalized to `\r` (wezterm's unix default;
+/// `\n` upsets nano). Embedded paste markers are stripped in both cases so a
+/// paste can't fake an end-of-paste.
+fn encode_paste(s: &str, bracketed: bool) -> String {
+    let mut body = String::with_capacity(s.len());
+    if bracketed {
+        body.push_str(s);
+    } else {
+        let mut it = s.chars().peekable();
+        while let Some(c) = it.next() {
+            match c {
+                '\n' => body.push('\r'),
+                '\r' => {
+                    body.push('\r');
+                    if it.peek() == Some(&'\n') {
+                        it.next();
+                    }
+                }
+                c => body.push(c),
+            }
+        }
+    }
+    let body = body.replace("\x1b[200~", "").replace("\x1b[201~", "");
+    if bracketed {
+        format!("\x1b[200~{body}\x1b[201~")
+    } else {
+        body
+    }
 }
 
 /// rio's terminal takes no writer; it answers queries (DSR, DA, DECRPM,
@@ -197,6 +462,27 @@ fn main() {
                     Ok(Cmd::Input { b }) => {
                         let mut w = writer.lock().unwrap();
                         let _ = w.write_all(b.as_bytes());
+                        let _ = w.flush();
+                    }
+                    // Encode against the live modes: read them under the term
+                    // lock, then write holding only the writer lock (the same
+                    // term-then-writer order the reader thread uses).
+                    Ok(Cmd::Key { key, mods }) => match parse_key(&key) {
+                        Some(k) => {
+                            let mode = term.lock().unwrap().mode();
+                            let bytes = encode_key(k, Mods::from_bits(mods), mode);
+                            let mut w = writer.lock().unwrap();
+                            let _ = w.write_all(bytes.as_bytes());
+                            let _ = w.flush();
+                        }
+                        None => eprintln!("ptyZZZ: unknown key: {key}"),
+                    },
+                    Ok(Cmd::Paste { s }) => {
+                        let bracketed =
+                            term.lock().unwrap().mode().contains(Mode::BRACKETED_PASTE);
+                        let bytes = encode_paste(&s, bracketed);
+                        let mut w = writer.lock().unwrap();
+                        let _ = w.write_all(bytes.as_bytes());
                         let _ = w.flush();
                     }
                     Ok(Cmd::Resize { cols, rows }) => {
