@@ -235,9 +235,13 @@ const TMPL = r#'<!doctype html>
         }
       }
     }
-    let fitTimer;
-    addEventListener("resize", () => { clearTimeout(fitTimer); fitTimer = setTimeout(fit, 200); });
-    fit();
+    // ?nofit observes without resizing the ptys -- for screenshots and
+    // debugging; a second viewer's fit would otherwise fight this one's.
+    if (!new URLSearchParams(location.search).has("nofit")) {
+      let fitTimer;
+      addEventListener("resize", () => { clearTimeout(fitTimer); fitTimer = setTimeout(fit, 200); });
+      fit();
+    }
     // Follow each pane's tail like a terminal, but let the user scroll back
     // undisturbed; resume following when they return to the bottom.
     const follow = {};
