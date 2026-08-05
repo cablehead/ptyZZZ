@@ -130,9 +130,11 @@ const TMPL = r#'<!doctype html>
       "PageUp","PageDown","Insert","Delete","Enter","Tab","Backspace","Escape"];
     function keyEvent(ev) {
       if (["Shift","Control","Alt","Meta","CapsLock"].includes(ev.key)) return null;
-      if (ev.metaKey) return null; // Cmd+x belongs to the browser/OS
-      const mods = (ev.shiftKey?1:0)|(ev.altKey?2:0)|(ev.ctrlKey?4:0);
+      const mods = (ev.shiftKey?1:0)|(ev.altKey?2:0)|(ev.ctrlKey?4:0)|(ev.metaKey?8:0);
       if (ev.key.length === 1) {
+        // Cmd+char belongs to the browser/OS (copy, reload, ...); Cmd with
+        // the named keys below is terminal input (Cmd+Left = CSI 1;9D).
+        if (ev.metaKey) return null;
         // Option as compose (non-US layouts) delivers a finished glyph in
         // ev.key; drop the alt bit so it isn't re-encoded as a Meta chord.
         if (ev.altKey && !ev.ctrlKey) {
@@ -191,7 +193,7 @@ const TMPL = r#'<!doctype html>
         if (s.key !== undefined) {
           dispatchEvent(new KeyboardEvent("keydown", {
             key: s.key, code: s.code ?? "",
-            shiftKey: !!(s.mods & 1), altKey: !!(s.mods & 2), ctrlKey: !!(s.mods & 4),
+            shiftKey: !!(s.mods & 1), altKey: !!(s.mods & 2), ctrlKey: !!(s.mods & 4), metaKey: !!(s.mods & 8),
             bubbles: true, cancelable: true,
           }));
         }
