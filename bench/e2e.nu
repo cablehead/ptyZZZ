@@ -32,6 +32,7 @@
 const HZ = 24
 const HZ_SLEEP = 38ms # ~24 Hz once per-event overhead is added
 const CPU_TAG = 7
+const FRAME_TAG = 9
 
 def bin [] { $env.BIN? | default "./target/release/ptyZZZ" }
 def secs [] { $env.SECS? | default 10 | into int }
@@ -40,10 +41,11 @@ def secs [] { $env.SECS? | default 10 | into int }
 # cumulative cpu from /proc until it exits, then mail the total (ms) to
 # main. /proc/<pid>/stat fields 14/15 are utime/stime in 100 Hz ticks.
 def spawn-cpu-sampler [] {
+    let bname = bin | path basename
     job spawn {
         mut pid = 0
         for _ in 1..50 {
-            let found = ps --long | where ppid == $nu.pid and name == "ptyZZZ"
+            let found = ps --long | where ppid == $nu.pid and name == $bname
             if ($found | is-not-empty) {
                 $pid = $found | first | get pid
                 break
@@ -113,6 +115,22 @@ def scroll24 [] {
     run-pty scroll24 [-- sh -c $script]
 }
 
+# scroll24's shape with URL-rich lines: 20 lines/tick at 24 Hz, each line
+# carrying a bare URL, a bracketed URL, an angle-bracketed URL, and a mailto
+# (and wrapping past 80 cols, so logical-line scanning is exercised). The
+# delta vs scroll24 prices the implicit-link scan plus anchor emission.
+def urls24 [] {
+    let ticks = (secs) * $HZ
+    let script = (
+        'i=0; while [ $i -lt ' + $"($ticks)" + ' ]; do j=0; while [ $j -lt 20 ]; do'
+        + ' echo "[$i.$j] GET https://api.example.com/v1/items/$i/$j ->'
+        + ' (https://cdn.example.com/img/$j.png) see <https://docs.example.com/p/$i>'
+        + ' or mail ops@example.com 200"'
+        + '; j=$((j+1)); done; i=$((i+1)); sleep 0.038; done'
+    )
+    run-pty urls24 [-- sh -c $script]
+}
+
 # Replay a recorded corpus in 24 byte-slices/sec via dd inside the pty.
 def replay [name: string, corpus: path] {
     if not ($corpus | path exists) {
@@ -146,7 +164,7 @@ def latency [] {
         | to text
         | ^$b run --coalesce 0 -- cat
         | lines
-        | each {|line| {line: $line, ts: (date now)} | job send 0 }
+        | each {|line| {line: $line, ts: (date now)} | job send 0 --tag $FRAME_TAG }
         | ignore
     }
     sleep 300ms # let ptyZZZ and cat spawn
@@ -156,7 +174,7 @@ def latency [] {
         let t0 = date now
         $'{"t":"input","b":"($m)\r"}' | job send $jid
         loop {
-            let msg = job recv --timeout 5sec
+            let msg = job recv --tag $FRAME_TAG --timeout 5sec
             if ($msg.line? | default "" | str contains $m) {
                 $lats = $lats | append ($msg.ts - $t0)
                 break
@@ -164,11 +182,12 @@ def latency [] {
         }
         sleep $HZ_SLEEP
     }
-    # JSON \\u0004 is ctrl-D: the pty line discipline turns it into EOF for
+    # JSON \u0004 is ctrl-D: the pty line discipline turns it into EOF for
     # cat, which exits and takes ptyZZZ down cleanly; then the empty-string
-    # sentinel stops the generator.
-    '{"t":"input","b":"\u0004"}' | job send $jid
-    "" | job send $jid
+    # sentinel stops the generator. Each send may race the job's own exit,
+    # so both are best-effort.
+    try { '{"t":"input","b":"\u0004"}' | job send $jid }
+    try { "" | job send $jid }
     sleep 300ms
     try { job kill $jid }
     let sorted = $lats | sort
@@ -191,6 +210,7 @@ def main [scenario: string = "all"] {
     match $scenario {
         "firehose" => [(firehose)]
         "scroll24" => [(scroll24)]
+        "urls24" => [(urls24)]
         "aqua24" => [(replay aqua24 bench/corpus/aqua.raw)]
         "vim24" => [(replay vim24 bench/corpus/vim24.raw)]
         "latency" => (latency)
@@ -198,6 +218,7 @@ def main [scenario: string = "all"] {
             let throughput = [
                 (firehose)
                 (scroll24)
+                (urls24)
                 (replay aqua24 bench/corpus/aqua.raw)
                 (replay vim24 bench/corpus/vim24.raw)
             ]
@@ -205,7 +226,7 @@ def main [scenario: string = "all"] {
             latency
         }
         _ => {
-            error make {msg: $"unknown scenario ($scenario); use firehose|scroll24|aqua24|vim24|latency|all"}
+            error make {msg: $"unknown scenario ($scenario); use firehose|scroll24|urls24|aqua24|vim24|latency|all"}
         }
     }
 }
