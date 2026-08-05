@@ -90,48 +90,49 @@ const PAGE = r#'<!doctype html>
 <body data-init="@get('/sse')">
   <div id=grid>connecting...</div>
   <script type=module>
-    // Map a KeyboardEvent to the bytes a pty expects; null = not ours.
-    // Lifted from stacks2099 key-buffer.js (xterm/vt100 semantics).
-    function keyToBytes(ev) {
+    // The client is byte-blind: it ships semantic key events and the
+    // emulator encodes them against its live input modes (application
+    // cursor keys, bracketed paste, ...). See PROTOCOL.md {t:key}/{t:paste}.
+    const NAMED = ["ArrowUp","ArrowDown","ArrowLeft","ArrowRight","Home","End",
+      "PageUp","PageDown","Insert","Delete","Enter","Tab","Backspace","Escape"];
+    function keyEvent(ev) {
       if (["Shift","Control","Alt","Meta","CapsLock"].includes(ev.key)) return null;
-      // xterm modifier parameter: 1 + shift + 2*alt + 4*ctrl + 8*meta;
-      // 1 means unmodified, in which case the parameter is omitted.
-      const mod = 1 + (ev.shiftKey?1:0) + (ev.altKey?2:0) + (ev.ctrlKey?4:0) + (ev.metaKey?8:0);
-      const CSI = {ArrowUp:"A",ArrowDown:"B",ArrowRight:"C",ArrowLeft:"D",Home:"H",End:"F"};
-      const TILDE = {PageUp:5,PageDown:6,Delete:3,Insert:2};
-      if (CSI[ev.key]) return mod===1 ? "\x1b["+CSI[ev.key] : "\x1b[1;"+mod+CSI[ev.key];
-      if (TILDE[ev.key] !== undefined) return mod===1 ? "\x1b["+TILDE[ev.key]+"~" : "\x1b["+TILDE[ev.key]+";"+mod+"~";
-      if (ev.key === "Backspace") {
-        if (ev.altKey && !ev.ctrlKey && !ev.metaKey) return "\x1b\x7f"; // meta-DEL: delete word
-        if (ev.ctrlKey && !ev.altKey && !ev.metaKey) return "\x17";     // ^W: delete word back
-        return "\x7f";
-      }
-      if (ev.key === "Enter") return "\r";
-      if (ev.key === "Tab") return "\t";
-      if (ev.key === "Escape") return "\x1b";
+      if (ev.metaKey) return null; // Cmd+x belongs to the browser/OS
+      const mods = (ev.shiftKey?1:0)|(ev.altKey?2:0)|(ev.ctrlKey?4:0);
       if (ev.key.length === 1) {
-        const ch = ev.key;
-        if (ev.ctrlKey && !ev.altKey && !ev.metaKey) {
-          const lower = ch.toLowerCase();
-          if (lower >= "a" && lower <= "z") return String.fromCharCode(lower.charCodeAt(0) - 0x60);
-          const PUNCT = {"@":0,"[":27,"\\":28,"]":29,"^":30,"_":31," ":0};
-          if (ch in PUNCT) return String.fromCharCode(PUNCT[ch]);
-          return null;
-        }
-        if (ev.altKey && !ev.ctrlKey && !ev.metaKey) {
-          // Option as compose (non-US layouts) delivers a non-letter glyph:
-          // send it literally. A true Alt+letter chord is ESC-prefixed for
-          // readline Meta.
+        // Option as compose (non-US layouts) delivers a finished glyph in
+        // ev.key; drop the alt bit so it isn't re-encoded as a Meta chord.
+        if (ev.altKey && !ev.ctrlKey) {
           const codeLetter = /^Key([A-Z])$/.exec(ev.code)?.[1]?.toLowerCase();
-          return (codeLetter && ch.toLowerCase() === codeLetter) ? "\x1b"+ch : ch;
+          if (!(codeLetter && ev.key.toLowerCase() === codeLetter)) {
+            return {t:"key", key: ev.key, mods: mods & ~2};
+          }
         }
-        if (ev.metaKey) return null; // Cmd+x belongs to the browser/OS
-        return ch;
+        return {t:"key", key: ev.key, mods};
       }
-      return null; // F1-F12 etc: not handled
+      if (NAMED.includes(ev.key) || /^F\d+$/.test(ev.key)) {
+        return {t:"key", key: ev.key, mods};
+      }
+      return null;
     }
-    const send = b => fetch("/input", {method:"POST",
-      headers:{"content-type":"application/octet-stream"}, body:b});
+    // Awaited send queue: at most one POST in flight, so frames reach the
+    // server in press order by construction. While one is in flight the
+    // backlog accumulates and drains as a single NDJSON batch, capping the
+    // added delay at one round trip regardless of typing speed.
+    let queue = [], sending = false;
+    function send(frame) {
+      queue.push(JSON.stringify(frame));
+      drain();
+    }
+    async function drain() {
+      if (sending) return;
+      sending = true;
+      while (queue.length) {
+        const batch = queue.splice(0).join("\n") + "\n";
+        try { await fetch("/input", {method:"POST", body: batch}); } catch {}
+      }
+      sending = false;
+    }
     addEventListener("keydown", ev => {
       // Composing keydowns (dead keys, IME) are provisional; skip them.
       if (ev.isComposing || ev.keyCode === 229) return;
@@ -143,16 +144,16 @@ const PAGE = r#'<!doctype html>
         const sel = getSelection().toString();
         if (sel) { navigator.clipboard.writeText(sel).catch(()=>{}); ev.preventDefault(); return; }
       }
-      const b = keyToBytes(ev);
-      if (b === null) return;
+      const frame = keyEvent(ev);
+      if (frame === null) return;
       ev.preventDefault();
-      send(b);
+      send(frame);
     });
     addEventListener("paste", ev => {
       const text = ev.clipboardData?.getData("text");
       if (!text) return;
       ev.preventDefault();
-      send(text);
+      send({t:"paste", s:text});
     });
     document.addEventListener("copy", ev => {
       // Rows are space-padded to full width; strip trailing whitespace
@@ -210,9 +211,12 @@ const PAGE = r#'<!doctype html>
       | metadata set --content-type "text/event-stream"
     })
 
+    # The body is one or more ptyZZZ command frames as NDJSON ({t:key},
+    # {t:paste}, {t:input}, {t:resize}), passed through verbatim; the client
+    # batches queued frames into one POST. See PROTOCOL.md.
     (route {method: "POST", path: "/input"} {|req ctx|
-      let body = $in | into string
-      ({t: "input", b: $body} | to json --raw) + "\n" | .append "pty.send" | ignore
+      let body = $in | into string | str trim --right --char "\n"
+      $body + "\n" | .append "pty.send" | ignore
       null | metadata set { merge {'http.response': {status: 204}} }
     })
 

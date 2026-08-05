@@ -23,8 +23,8 @@ use wezterm_surface::hyperlink::{
 };
 use wezterm_term::{
     color::{ColorAttribute, ColorPalette},
-    CellAttributes, Intensity, Line, StableRowIndex, Terminal, TerminalConfiguration,
-    TerminalSize, Underline,
+    CellAttributes, Intensity, KeyCode, KeyModifiers, Line, StableRowIndex, Terminal,
+    TerminalConfiguration, TerminalSize, Underline,
 };
 
 #[derive(Parser)]
@@ -70,8 +70,68 @@ enum Sub {
 #[derive(Deserialize)]
 #[serde(tag = "t", rename_all = "lowercase")]
 enum Cmd {
+    /// raw bytes to the pty (composed IME text, tests, escape hatches)
     Input { b: String },
+    /// a semantic key event; the emulator encodes it per its current modes
+    /// (application cursor keys, modifyOtherKeys, kitty protocol, ...)
+    Key {
+        key: String,
+        #[serde(default)]
+        mods: u8,
+    },
+    /// pasted text; wrapped in bracketed-paste markers when the app enabled them
+    Paste { s: String },
     Resize { cols: u16, rows: u16 },
+}
+
+/// Browser `KeyboardEvent.key` name -> wezterm KeyCode. Single chars pass
+/// through; named keys cover the editing/navigation cluster and F1-F24.
+fn parse_key(k: &str) -> Option<KeyCode> {
+    let mut chars = k.chars();
+    if let (Some(c), None) = (chars.next(), chars.next()) {
+        return Some(KeyCode::Char(c));
+    }
+    Some(match k {
+        "ArrowUp" => KeyCode::UpArrow,
+        "ArrowDown" => KeyCode::DownArrow,
+        "ArrowLeft" => KeyCode::LeftArrow,
+        "ArrowRight" => KeyCode::RightArrow,
+        "Home" => KeyCode::Home,
+        "End" => KeyCode::End,
+        "PageUp" => KeyCode::PageUp,
+        "PageDown" => KeyCode::PageDown,
+        "Insert" => KeyCode::Insert,
+        "Delete" => KeyCode::Delete,
+        "Enter" => KeyCode::Enter,
+        "Tab" => KeyCode::Tab,
+        "Backspace" => KeyCode::Backspace,
+        "Escape" => KeyCode::Escape,
+        _ => {
+            let n = k.strip_prefix('F')?.parse::<u8>().ok()?;
+            if n == 0 || n > 24 {
+                return None;
+            }
+            KeyCode::Function(n)
+        }
+    })
+}
+
+/// Client modifier bits (1 shift, 2 alt, 4 ctrl, 8 meta) -> wezterm modifiers.
+fn parse_mods(bits: u8) -> KeyModifiers {
+    let mut m = KeyModifiers::NONE;
+    if bits & 1 != 0 {
+        m |= KeyModifiers::SHIFT;
+    }
+    if bits & 2 != 0 {
+        m |= KeyModifiers::ALT;
+    }
+    if bits & 4 != 0 {
+        m |= KeyModifiers::CTRL;
+    }
+    if bits & 8 != 0 {
+        m |= KeyModifiers::SUPER;
+    }
+    m
 }
 
 #[derive(Debug)]
@@ -198,6 +258,17 @@ fn main() {
                         let mut w = writer.lock().unwrap();
                         let _ = w.write_all(b.as_bytes());
                         let _ = w.flush();
+                    }
+                    // key_down / send_paste encode through the terminal's own
+                    // writer (the pty), honoring its current input modes.
+                    Ok(Cmd::Key { key, mods }) => match parse_key(&key) {
+                        Some(kc) => {
+                            let _ = term.lock().unwrap().key_down(kc, parse_mods(mods));
+                        }
+                        None => eprintln!("ptyZZZ: unknown key: {key}"),
+                    },
+                    Ok(Cmd::Paste { s }) => {
+                        let _ = term.lock().unwrap().send_paste(&s);
                     }
                     Ok(Cmd::Resize { cols, rows }) => {
                         let _ = master.lock().unwrap().resize(PtySize {
