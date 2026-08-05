@@ -27,6 +27,11 @@ use wezterm_term::{
     TerminalConfiguration, TerminalSize, Underline,
 };
 
+/// Which emulation engine this build carries; exported to the child as
+/// PTYZZZ_ENGINE so a session can identify its backend (the rio-vt branch
+/// sets this to "rio-vt").
+const ENGINE: &str = "wezterm-term";
+
 #[derive(Parser)]
 #[command(about = "own one pty, speak JSONL on stdio")]
 struct Args {
@@ -185,6 +190,7 @@ fn main() {
     }
     builder.env("TERM", "xterm-256color");
     builder.env("COLORTERM", "truecolor");
+    builder.env("PTYZZZ_ENGINE", ENGINE);
     if let Ok(cwd) = std::env::current_dir() {
         builder.cwd(cwd);
     }
