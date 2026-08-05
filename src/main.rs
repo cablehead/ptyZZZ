@@ -506,6 +506,22 @@ impl EmitState {
     }
 }
 
+// --- hyperlinks: engine-agnostic policy --------------------------------------
+// safe_href and the anchor emission in render_row_into work on plain strings
+// and know nothing about the emulator.
+
+/// Return the URI to use as an `href`, or None if its scheme isn't one we'll
+/// make clickable. OSC 8 can carry any scheme (including `javascript:` and
+/// `data:`), so gate every link through this allowlist before it reaches the
+/// DOM. Our implicit rules only ever emit http/https/mailto anyway.
+fn safe_href(uri: &str) -> Option<&str> {
+    let u = uri.trim();
+    let ok = ["http://", "https://", "mailto:"]
+        .iter()
+        .any(|p| u.len() >= p.len() && u.as_bytes()[..p.len()].eq_ignore_ascii_case(p.as_bytes()));
+    ok.then_some(u)
+}
+
 // --- render ------------------------------------------------------------------
 
 /// The cursor is its own self-identified overlay, positioned purely by CSS
@@ -694,8 +710,9 @@ fn cell_needs_box(glyph: &str, width: usize) -> bool {
     width != 1 || glyph.chars().count() > 1
 }
 
-/// One streaming pass over the row's cells: runs with the same paint key share
-/// one span, styles are looked up only at run boundaries, and no per-cell
+/// One streaming pass over the row's cells: runs with the same paint key AND
+/// the same link target share one wrapper (`<a>` when linked, `<span>` when
+/// only styled), styles are looked up only at run boundaries, and no per-cell
 /// allocation happens (grapheme clusters aside; they are rare). Default-paint
 /// blanks are buffered so trailing ones are dropped -- `white-space:pre` plus
 /// `.row{min-height}` keep the geometry without them.
@@ -712,9 +729,10 @@ fn render_row_into(
     let ncols = cols.min(row.inner.len());
     let mut expected = 0usize;
     let mut pending_blanks = 0usize;
-    let mut span_open = false;
-    let mut run_paint: Option<Paint> = None;
     let mut cluster = String::new();
+    // Some(close_tag) while a wrapper is open; run identity is paint + href.
+    let mut open: Option<&'static str> = None;
+    let mut run: Option<(Paint, Option<&str>)> = None;
 
     for col in 0..ncols {
         if col < expected {
@@ -727,56 +745,69 @@ fn render_row_into(
         };
         expected = col + width;
         let paint = paint_of(sq);
-        let plain = paint == Paint::Style(DEFAULT_STYLE_ID);
         let ch = sq.c();
 
-        // Multi-codepoint grapheme clusters live in the grid's extras table;
-        // the cell itself only carries the base char.
+        // Grapheme clusters and OSC 8 hyperlinks share the grid's extras
+        // table; the cell itself only carries the base char and an id.
+        // bg-only cells reuse the extras bits for color, so gate on tag.
         cluster.clear();
-        if matches!(sq.content_tag(), ContentTag::Codepoint) && sq.has_grapheme() {
+        let mut href: Option<&str> = None;
+        if matches!(sq.content_tag(), ContentTag::Codepoint) && sq.has_extras() {
             if let Some(ex) = sq.extras_id().and_then(|id| extras.get(id)) {
-                cluster.push(if ch == '\0' { ' ' } else { ch });
-                cluster.extend(ex.zerowidth.iter());
+                if sq.has_grapheme() {
+                    cluster.push(if ch == '\0' { ' ' } else { ch });
+                    cluster.extend(ex.zerowidth.iter());
+                }
+                if sq.has_hyperlink() {
+                    href = ex.hyperlink.as_ref().and_then(|h| safe_href(h.uri()));
+                }
             }
         }
 
+        let plain = href.is_none() && paint == Paint::Style(DEFAULT_STYLE_ID);
         if plain && width == 1 && cluster.is_empty() && (ch == ' ' || ch == '\0') {
             pending_blanks += 1;
             continue;
         }
         if pending_blanks > 0 {
-            if span_open {
-                out.push_str("</span>");
-                span_open = false;
-                run_paint = None;
+            if let Some(tag) = open.take() {
+                out.push_str(tag);
             }
+            run = None;
             out.extend(std::iter::repeat(' ').take(pending_blanks));
             pending_blanks = 0;
         }
         if plain {
-            if span_open {
-                out.push_str("</span>");
-                span_open = false;
-                run_paint = None;
+            if let Some(tag) = open.take() {
+                out.push_str(tag);
             }
-        } else if run_paint != Some(paint) {
-            if span_open {
-                out.push_str("</span>");
+            run = None;
+        } else if run != Some((paint, href)) {
+            if let Some(tag) = open.take() {
+                out.push_str(tag);
             }
+            run = None;
             let (classes, style) = cell_class_and_style(paint, styles);
-            if classes.is_empty() && style.is_empty() {
-                span_open = false;
-                run_paint = None;
+            if href.is_none() && classes.is_empty() && style.is_empty() {
+                // visually default (e.g. only non-rendered bits set)
             } else {
-                out.push_str("<span class=\"c");
-                out.push_str(&classes);
-                out.push('"');
+                if let Some(h) = href {
+                    out.push_str("<a href=\"");
+                    html_escape(h, out);
+                    out.push_str("\" target=\"_blank\" rel=\"noopener\"");
+                    open = Some("</a>");
+                } else {
+                    out.push_str("<span");
+                    open = Some("</span>");
+                }
+                if !classes.is_empty() {
+                    let _ = write!(out, " class=\"c{classes}\"");
+                }
                 if !style.is_empty() {
                     let _ = write!(out, " style=\"{style}\"");
                 }
                 out.push('>');
-                span_open = true;
-                run_paint = Some(paint);
+                run = Some((paint, href));
             }
         }
         let mut chbuf = [0u8; 4];
@@ -795,8 +826,8 @@ fn render_row_into(
             html_escape(glyph, out);
         }
     }
-    if span_open {
-        out.push_str("</span>");
+    if let Some(tag) = open.take() {
+        out.push_str(tag);
     }
     out.push_str("</div>");
 }

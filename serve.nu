@@ -76,6 +76,7 @@ const PAGE = "<!doctype html>
   body{background:#000;color:var(--term-fg);margin:0;font:14px/1.2 monospace}
   #grid{white-space:pre;padding:8px;background:var(--term-bg);position:relative;min-height:100vh;box-sizing:border-box}
   .row{min-height:1.2em}
+  #grid a{color:inherit;text-decoration:underline}
   .cursor{position:absolute;top:calc(8px + var(--cursor-row)*1.2em);left:calc(8px + var(--cursor-col)*1ch);
     width:1ch;height:1.2em;background:var(--term-fg);opacity:.4;pointer-events:none}
   .wc{display:inline-block;width:calc(var(--w)*1ch)}
