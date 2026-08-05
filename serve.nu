@@ -155,6 +155,30 @@ const PAGE = r#'<!doctype html>
       ev.preventDefault();
       send({t:"paste", s:text});
     });
+    // Fit the pty to the window: measure one rendered line box from a
+    // probe row (inherits the grid font and 1.2 line-height), derive
+    // cols/rows from the viewport minus the grid padding, and send
+    // {t:resize} when the geometry changes. Note every open tab does
+    // this, so the last viewer to resize wins, like tmux.
+    function fit() {
+      const grid = document.getElementById("grid");
+      const probe = document.createElement("div");
+      probe.textContent = "M".repeat(40);
+      probe.style.cssText = "position:absolute;visibility:hidden;white-space:pre";
+      grid.appendChild(probe);
+      const r = probe.getBoundingClientRect();
+      grid.removeChild(probe);
+      if (r.width === 0 || r.height === 0) return;
+      const cols = Math.max(20, Math.floor((grid.clientWidth - 16) / (r.width / 40)));
+      const rows = Math.max(5, Math.floor((innerHeight - 16) / r.height));
+      if (cols !== fit.cols || rows !== fit.rows) {
+        fit.cols = cols; fit.rows = rows;
+        send({t:"resize", cols, rows});
+      }
+    }
+    let fitTimer;
+    addEventListener("resize", () => { clearTimeout(fitTimer); fitTimer = setTimeout(fit, 200); });
+    fit();
     document.addEventListener("copy", ev => {
       // Rows are space-padded to full width; strip trailing whitespace
       // per line so copies match what a terminal emulator would yield.
