@@ -62,7 +62,8 @@ Open http://127.0.0.1:5111 and type into the page.
 
 The bigger demo is [examples/cube](examples/cube): six live terminals on a
 spinning CSS cube, all on one SSE connection. The front face is an interactive
-shell.
+shell. [examples/panes](examples/panes) is a niri-style multiplexer: open,
+split, and close panes at runtime.
 
 ## Why the emulator lives on the server
 

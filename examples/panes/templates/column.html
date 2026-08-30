@@ -1,0 +1,5 @@
+<div class="column" id="col-{{ col.id }}" data-col="{{ col.id }}">
+  {% for pane in col.panes %}
+  {% include "pane.html" %}
+  {% endfor %}
+</div>

@@ -1,0 +1,21 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>panes</title>
+  <script type="module" src="{{ datastar | safe }}"></script>
+  <link rel="stylesheet" href="/static/panes.css?v=2">
+</head>
+<body data-init="@get('/sse')">
+  <div id="strip">
+    {% include "strip.html" %}
+  </div>
+  <div id="empty"{% if columns %} hidden{% endif %}>mod+K n to open a pane</div>
+  <div id="status">
+    <button type="button" id="mode-badge">navigate</button>
+    <span class="hint">mod+K</span>
+  </div>
+  {% include "panel.html" %}
+  <script type="module" src="/static/panes.js?v=2"></script>
+</body>
+</html>

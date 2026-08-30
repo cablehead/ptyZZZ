@@ -1,5 +1,6 @@
 /target
 /store
+node_modules
 /server.log
 /datastar-docs.md
 /localhost.pem
