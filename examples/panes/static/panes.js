@@ -143,12 +143,11 @@ function followCursor(name) {
   else if (c.bottom > b.bottom) box.scrollTop += (c.bottom - b.bottom);
 }
 function reveal(id) {
-  const col = paneOf(id)?.closest(".column");
-  const scroller = document.getElementById("strip");
-  if (!col || !scroller) return;
-  const s = scroller.getBoundingClientRect(), c = col.getBoundingClientRect();
-  if (c.left < s.left) scroller.scrollLeft -= (s.left - c.left);
-  else if (c.right > s.right) scroller.scrollLeft += (c.right - s.right);
+  paneOf(id)?.closest(".column")?.scrollIntoView({
+    inline: "center",
+    block: "nearest",
+    behavior: "smooth",
+  });
 }
 function wirePane(p) {
   const name = p.dataset.pane;
