@@ -85,7 +85,6 @@ function setMode(next) {
   mode = next;
   document.body.classList.toggle("mode-focus", mode === "focus");
   document.getElementById("mode-badge").textContent = mode;
-  if (mode === "focus") parkFocus();
 }
 function setSelected(id, {focus = false, scroll = true} = {}) {
   selected = id || "";
@@ -172,7 +171,7 @@ const strip = document.getElementById("strip");
 strip.addEventListener("mousedown", e => {
   const p = e.target.closest(".pane");
   if (!p) return;
-  setSelected(p.dataset.pane, {focus: true, scroll: false});
+  setSelected(p.dataset.pane, {focus: true});
 });
 strip.addEventListener("click", e => {
   if (e.target.closest(".pane")) parkFocus();
