@@ -6,7 +6,8 @@
 #
 # Panes: PTYZZZ_BINS is a comma-separated list of name=path pairs, one pty
 # pane per entry, rendered side by side. Unset, it serves one pane backed by
-# this repo's binary. Two engines head to head:
+# this repo's release binary if present, otherwise ptyZZZ on PATH. Two engines
+# head to head:
 #   PTYZZZ_BINS="wezterm=/a/ptyZZZ,rio=/b/ptyZZZ" http-nu ... serve.nu
 #
 # Flow, per pane <name>:
@@ -31,10 +32,25 @@ use http-nu/datastar *
 use http-nu/router *
 
 const HERE = (path self | path dirname)
-const PTYZZZ = (path self | path dirname | path join "target" "release" "ptyZZZ")
+const LOCAL_BIN = ($HERE | path join "target" "release" "ptyZZZ")
+
+def resolve-ptyzzz [] {
+  if ($LOCAL_BIN | path exists) { $LOCAL_BIN } else {
+    let found = which ptyZZZ
+    if ($found | is-empty) {
+      error make {msg: "serve: no ptyZZZ binary (cargo build --release, or put ptyZZZ on PATH)"}
+    } else {
+      $found.0.path
+    }
+  }
+}
 
 let panes = (
-  $env.PTYZZZ_BINS? | default $"local=($PTYZZZ)"
+  (if ($env.PTYZZZ_BINS? | default "" | is-empty) {
+    $"local=(resolve-ptyzzz)"
+  } else {
+    $env.PTYZZZ_BINS
+  })
   | split row ","
   | each {|p|
       let kv = $p | split row "=" | each { str trim }
