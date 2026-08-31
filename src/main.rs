@@ -417,11 +417,16 @@ fn main() {
                 if *g != last_gen || done.load(Ordering::SeqCst) {
                     break;
                 }
-                let due_in = if state.dirty_since_keyframe {
+                let keyframe_in = if state.dirty_since_keyframe {
                     keyframe_interval.saturating_sub(state.last_keyframe.elapsed())
                 } else {
                     Duration::from_secs(3600)
                 };
+                let due_in = keyframe_in.min(
+                    state
+                        .cursor_hide_due_in()
+                        .unwrap_or(Duration::from_secs(3600)),
+                );
                 if due_in.is_zero() {
                     break;
                 }
@@ -475,6 +480,11 @@ fn bump(dirty: &Arc<(Mutex<u64>, Condvar)>) {
 
 // --- frame production --------------------------------------------------------
 
+/// How long the cursor must stay DECTCEM-hidden before the client is told.
+/// Long enough to swallow a repaint's hide/show pair (TUIs cycle those about
+/// ten times a second), short enough that a real hide reads as immediate.
+const CURSOR_HIDE_GRACE: Duration = Duration::from_millis(120);
+
 struct EmitState {
     target: String,
     /// rendered row html by stable row index; the keyframe is the ordered
@@ -486,7 +496,12 @@ struct EmitState {
     last_cols: usize,
     last_rows: usize,
     last_alt: bool,
-    last_cursor: (usize, usize, bool),
+    /// cursor state the client currently has: position plus visibility. Only
+    /// ever advanced from a sample taken while the cursor was visible.
+    shown_cursor: (usize, usize, bool),
+    /// when the terminal's cursor first went DECTCEM-hidden, cleared the
+    /// moment it comes back. Drives the hide grace below.
+    hidden_since: Option<Instant>,
     sent_initial: bool,
     last_keyframe: Instant,
     dirty_since_keyframe: bool,
@@ -505,12 +520,24 @@ impl EmitState {
             last_cols: 0,
             last_rows: 0,
             last_alt: false,
-            last_cursor: (usize::MAX, usize::MAX, true),
+            shown_cursor: (usize::MAX, usize::MAX, true),
+            hidden_since: None,
             sent_initial: false,
             last_keyframe: Instant::now(),
             dirty_since_keyframe: false,
             scan_seqno: 0,
         }
+    }
+
+    /// Time until a pending hide is owed to the client, if one is pending. The
+    /// emitter waits on this: a grace can expire with no further damage to wake
+    /// it (an app hides the cursor, finishes its repaint, then sits idle).
+    fn cursor_hide_due_in(&self) -> Option<Duration> {
+        let since = self.hidden_since?;
+        if !self.shown_cursor.2 {
+            return None; // already hidden on the client
+        }
+        Some(CURSOR_HIDE_GRACE.saturating_sub(since.elapsed()))
     }
 
     /// Inspect the terminal, update the row cache, and produce the next frame:
@@ -532,11 +559,37 @@ impl EmitState {
         let total = screen.scrollback_rows();
         let base = screen.phys_to_stable_row_index(0);
         let max = base + total as StableRowIndex;
-        let cursor_now = (
+        // DECTCEM off means "this position is scratch". A TUI hides the cursor,
+        // repaints (leaving it wherever the repaint ended -- a spinner row,
+        // column 0), then parks it and shows it again. Sampling every 16ms
+        // catches both halves, so adopting a hidden sample strobed the overlay
+        // between the repaint row and the prompt. Two rules follow:
+        //
+        //   - a hidden sample never moves the cursor. Its coordinates are only
+        //     ever a repaint artifact.
+        //   - a hide reaches the client only if it outlives CURSOR_HIDE_GRACE.
+        //     A repaint's hide/show pair is milliseconds; an app that turns the
+        //     cursor off and leaves it off crosses the grace and goes dark.
+        let now = Instant::now();
+        let raw = (
             total.saturating_sub(rows) + cursor.y.max(0) as usize,
             cursor.x,
             cursor.visibility == wezterm_surface::CursorVisibility::Visible,
         );
+        if raw.2 {
+            self.hidden_since = None;
+        } else if self.hidden_since.is_none() {
+            self.hidden_since = Some(now);
+        }
+        let cursor_now = if raw.2 || !self.sent_initial {
+            // The first frame has no shown position to hold, so it takes the
+            // sample as-is however the app left it.
+            raw
+        } else if now.duration_since(self.hidden_since.unwrap()) >= CURSOR_HIDE_GRACE {
+            (self.shown_cursor.0, self.shown_cursor.1, false)
+        } else {
+            self.shown_cursor
+        };
 
         // A resize reflows rows and an alt-screen flip swaps line storage;
         // both invalidate the seqno diff basis, so re-render everything.
@@ -572,7 +625,7 @@ impl EmitState {
             (self.last_base..base.min(self.last_max)).collect()
         };
 
-        let cursor_moved = cursor_now != self.last_cursor;
+        let cursor_moved = cursor_now != self.shown_cursor;
         if !forced
             && !keyframe_due
             && damaged.is_empty()
@@ -673,7 +726,7 @@ impl EmitState {
         self.last_cols = cols;
         self.last_rows = rows;
         self.last_alt = alt;
-        self.last_cursor = cursor_now;
+        self.shown_cursor = cursor_now;
         self.sent_initial = true;
         Some(frame)
     }
@@ -769,8 +822,8 @@ fn scan_hyperlinks(term: &mut Terminal, since: usize, lo: Option<StableRowIndex>
 
 /// The cursor is its own self-identified overlay, positioned purely by CSS
 /// vars, so a cursor move patches ~90 bytes instead of touching any row.
-/// DECTCEM hidden (TUIs hide the cursor while repainting) renders as
-/// display:none so the overlay does not flash around the grid.
+/// DECTCEM hidden renders as display:none. Whether a hide is real, and which
+/// position survives it, is decided in `produce` -- see CURSOR_HIDE_GRACE.
 fn render_cursor_into(out: &mut String, target: &str, row: usize, col: usize, visible: bool) {
     let display = if visible { "" } else { ";display:none" };
     let _ = write!(
