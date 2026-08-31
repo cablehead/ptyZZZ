@@ -40,14 +40,16 @@ body.zoom .pane.selected .label::after{content:" [zoom]"}
    it: a pane the user scrolled up is left alone so anchoring holds the line
    under their eye as rows trim off the top. */
 .scroll{flex:1;overflow-x:hidden;overflow-y:auto;position:relative;min-height:0;overflow-anchor:auto}
-.scroll>[id^="grid-"]{white-space:pre;padding:8px;position:relative;box-sizing:border-box;
+/* Horizontal inset only. Vertical padding sits inside the scroll content, so
+   a pane pinned to the bottom would start mid-row at the top. */
+.scroll>[id^="grid-"]{white-space:pre;padding:0 8px;position:relative;box-sizing:border-box;
   font-size:14px;line-height:var(--cell-h)}
 .row{height:var(--cell-h)}
 .cell-probe{position:absolute;top:-9999px;left:-9999px;visibility:hidden;white-space:pre;
   font-family:var(--term-font);font-size:14px;line-height:var(--cell-h)}
 .pane a{color:inherit;text-decoration:underline}
 
-.cursor{position:absolute;top:calc(8px + var(--cursor-row)*var(--cell-h));left:calc(8px + var(--cursor-col)*1ch);
+.cursor{position:absolute;top:calc(var(--cursor-row)*var(--cell-h));left:calc(8px + var(--cursor-col)*1ch);
   width:1ch;height:var(--cell-h);pointer-events:none;box-shadow:inset 0 0 0 1px var(--term-fg)}
 body.mode-focus .pane.selected .cursor{background:var(--term-fg);box-shadow:none;mix-blend-mode:difference;
   animation:cursor-blink 1s steps(2) infinite}

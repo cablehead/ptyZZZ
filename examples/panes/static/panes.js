@@ -127,8 +127,25 @@ function fit() {
     // A zoomed-away pane measures zero. Without this the floors below would
     // resize its pty to 20x5 and reflow its scrollback out of sight.
     if (!box.clientWidth || !box.clientHeight) continue;
+    // Height comes from the pane, not from the box: we set the box's own
+    // height below, so reading it back would freeze the row count. The label
+    // sits above .scroll, so subtract the siblings that precede it.
+    let head = 0;
+    for (let s = p.firstElementChild; s && s !== box; s = s.nextElementSibling) {
+      head += s.offsetHeight || 0;
+    }
     const cols = Math.max(20, Math.floor((box.clientWidth - 16) / cell.w));
-    const rows = Math.max(5, Math.floor((box.clientHeight - 16) / cell.h));
+    const rows = Math.max(5, Math.floor((p.clientHeight - head) / cell.h));
+    // Pin the box to a whole number of rows. The sub-row remainder sits below
+    // it showing the pane background, instead of clipping a half row at the
+    // top once the pane is pinned to the bottom.
+    const h = rows * cell.h + "px";
+    if (box.style.height !== h) {
+      box.style.flex = "none";
+      box.style.height = h;
+      // Shrinking the box leaves scrollTop short of the new bottom.
+      if (stick[name] !== false) stickToBottom(name);
+    }
     const prev = lastFit[name];
     if (!prev || prev.cols !== cols || prev.rows !== rows) {
       lastFit[name] = {cols, rows};
