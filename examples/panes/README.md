@@ -22,6 +22,10 @@ dynamic multiplexer.
 Columns are 100ch, full height, panned horizontally. Split stacks another
 pane in the focused column.
 
+Zoom (`f`) maximizes the selected pane over the whole strip. It is per
+browser tab, not layout: nothing is stored server side, and it follows the
+selection rather than pinning to a pane id.
+
 ## Requirements
 
 - `ptyZZZ` built in this repo: `cargo build --release`
@@ -46,7 +50,8 @@ Use a dedicated store if you also run root `serve.nu` or cube against `./store`.
 Two modes, same as stacks2099.
 
 - **navigate** (default): bare `h`/`l` move columns, `j`/`k` move panes in
-  the column, `n` new column, `s` split. Enter or click focuses the pty.
+  the column, `n` new column, `s` split, `f` zoom. Enter or click focuses the
+  pty.
 - **focus**: keys go to `nu`. `mod+Enter` toggles back to navigate.
 - **mod+K**: command panel in both modes (which-key after a short pause).
   Close is `mod+K x` only.

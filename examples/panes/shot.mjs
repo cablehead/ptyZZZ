@@ -73,9 +73,34 @@ await page.waitForSelector("#grid-p3", { timeout: 8000 });
 await page.waitForTimeout(400);
 await shot("04-split-column");
 
+await page.keyboard.press("f");
+await page.waitForTimeout(500);
+await shot("05-zoom");
+const zoomed = await page.evaluate(() => {
+  const strip = document.getElementById("strip").getBoundingClientRect();
+  const vis = [...document.querySelectorAll(".pane")].filter((p) => p.offsetParent);
+  const box = vis[0]?.getBoundingClientRect();
+  return {
+    visible: vis.length,
+    pane: vis[0]?.dataset.pane,
+    fills: box ? box.width > strip.width - 4 && box.height > strip.height - 4 : false,
+  };
+});
+console.log("zoom " + JSON.stringify(zoomed));
+if (zoomed.visible !== 1) throw new Error("zoom left " + zoomed.visible + " panes visible");
+if (!zoomed.fills) throw new Error("zoomed pane does not fill the strip");
+
+await page.keyboard.press("f");
+await page.waitForTimeout(500);
+await shot("06-unzoom");
+const restored = await page.evaluate(() =>
+  [...document.querySelectorAll(".pane")].filter((p) => p.offsetParent).length);
+console.log("unzoom_visible " + restored);
+if (restored !== 3) throw new Error("unzoom restored " + restored + " panes, want 3");
+
 await page.keyboard.press("Control+k");
 await page.waitForTimeout(250);
-await shot("05-modk-panel");
+await shot("07-modk-panel");
 await page.keyboard.press("Escape");
 
 await page.locator(".pane[data-pane='p1']").click();
@@ -87,7 +112,7 @@ await page.waitForFunction(
   null,
   { timeout: 8000 },
 );
-await shot("06-typed");
+await shot("08-typed");
 
 await page.keyboard.press("Control+Enter");
 for (const id of ["p3", "p2", "p1"]) {
@@ -102,12 +127,12 @@ for (const id of ["p3", "p2", "p1"]) {
   }
 }
 await page.waitForSelector("#empty:not([hidden])", { timeout: 5000 });
-await shot("07-empty");
+await shot("09-empty");
 
 await page.keyboard.press("n");
 await page.waitForSelector(".pane", { timeout: 8000 });
 await page.waitForTimeout(400);
-await shot("08-reopen");
+await shot("10-reopen");
 
 const summary = await page.evaluate(() => ({
   panes: document.querySelectorAll(".pane").length,

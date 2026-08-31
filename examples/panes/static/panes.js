@@ -65,6 +65,7 @@ function parkFocus() {
 
 let mode = "navigate";
 let selected = sessionStorage.getItem("panes.selected") || firstPane();
+let zoom = sessionStorage.getItem("panes.zoom") === "1";
 let actionsOwned = false;
 let actionsTimer = null;
 
@@ -91,7 +92,11 @@ function setSelected(id, {focus = false, scroll = true} = {}) {
   try { sessionStorage.setItem("panes.selected", selected); } catch {}
   paneEls().forEach(p => p.classList.toggle("selected", p.dataset.pane === selected));
   if (focus) setMode("focus");
-  if (scroll && selected) reveal(selected);
+  if (!selected) { setZoom(false); return; }
+  // Zoom rides the .selected class, so moving the selection moves the zoom.
+  // The pane arriving was hidden: it needs a fit for its new size and a re-pin.
+  if (zoom) { scheduleFit(); restick(); }
+  else if (scroll) reveal(selected);
 }
 function syncEmpty() {
   document.getElementById("empty").hidden = !!document.querySelector(".column");
@@ -119,6 +124,9 @@ function fit() {
     const name = p.dataset.pane;
     const box = p.querySelector(".scroll");
     if (!box) continue;
+    // A zoomed-away pane measures zero. Without this the floors below would
+    // resize its pty to 20x5 and reflow its scrollback out of sight.
+    if (!box.clientWidth || !box.clientHeight) continue;
     const cols = Math.max(20, Math.floor((box.clientWidth - 16) / cell.w));
     const rows = Math.max(5, Math.floor((box.clientHeight - 16) / cell.h));
     const prev = lastFit[name];
@@ -174,6 +182,26 @@ function reveal(id) {
     inline: "center",
     block: "nearest",
     behavior: "smooth",
+  });
+}
+// Zoom is per viewer, like `selected`: it changes no layout and must not
+// outlive a reload of the strip, so it stays out of the store.
+function setZoom(on) {
+  zoom = !!on && !!selected;
+  try { sessionStorage.setItem("panes.zoom", zoom ? "1" : ""); } catch {}
+  document.body.classList.toggle("zoom", zoom);
+  scheduleFit();
+  restick();
+}
+// A hidden pane has no scrollHeight, so stickToBottom cannot run on it while
+// it is zoomed away. Re-pin every stuck pane once the new layout has settled.
+function restick() {
+  requestAnimationFrame(() => {
+    for (const p of paneEls()) {
+      const name = p.dataset.pane;
+      if (stick[name] !== false) stickToBottom(name);
+    }
+    if (!zoom && selected) reveal(selected);
   });
 }
 function wirePane(p) {
@@ -271,6 +299,7 @@ const acts = {
     setSelected(out?.next || firstPane(), {focus: mode === "focus" && !!(out?.next || firstPane())});
     if (!firstPane()) setMode("navigate");
   },
+  zoom() { setZoom(!zoom); },
   "col-prev"() { moveCol(-1); },
   "col-next"() { moveCol(1); },
   "pane-prev"() { moveInCol(-1); },
@@ -433,5 +462,6 @@ document.addEventListener("keydown", ev => {
 }, {capture: true});
 
 wireAll();
+setZoom(zoom);
 setMode("navigate");
 parkFocus();
