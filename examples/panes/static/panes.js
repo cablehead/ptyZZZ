@@ -97,22 +97,30 @@ function syncEmpty() {
   document.getElementById("empty").hidden = !!document.querySelector(".column");
 }
 
+// One probe for the whole strip: every grid shares the same font metrics.
+// It carries the grid's own line-height so a measured row matches a rendered
+// one exactly -- measuring inside .scroll picked up the chrome line-height.
+function measureCell() {
+  const probe = document.createElement("div");
+  probe.className = "cell-probe";
+  probe.textContent = "M".repeat(80);
+  document.body.appendChild(probe);
+  const r = probe.getBoundingClientRect();
+  probe.remove();
+  return {w: r.width / 80, h: r.height};
+}
+
 const lastFit = {};
 function fit() {
   if (NOFIT) return;
+  const cell = measureCell();
+  if (!cell.w || !cell.h) return;
   for (const p of paneEls()) {
     const name = p.dataset.pane;
     const box = p.querySelector(".scroll");
     if (!box) continue;
-    const probe = document.createElement("div");
-    probe.textContent = "M".repeat(40);
-    probe.style.cssText = "position:absolute;visibility:hidden;white-space:pre";
-    box.appendChild(probe);
-    const r = probe.getBoundingClientRect();
-    box.removeChild(probe);
-    if (r.width === 0 || r.height === 0) continue;
-    const cols = Math.max(20, Math.floor((box.clientWidth - 16) / (r.width / 40)));
-    const rows = Math.max(5, Math.floor((box.clientHeight - 16) / r.height));
+    const cols = Math.max(20, Math.floor((box.clientWidth - 16) / cell.w));
+    const rows = Math.max(5, Math.floor((box.clientHeight - 16) / cell.h));
     const prev = lastFit[name];
     if (!prev || prev.cols !== cols || prev.rows !== rows) {
       lastFit[name] = {cols, rows};
@@ -126,21 +134,40 @@ function scheduleFit() {
   fitTimer = setTimeout(fit, 80);
 }
 
-const follow = {};
-function cursorInView(name) {
-  const box = document.querySelector(`.pane[data-pane="${name}"] .scroll`);
-  const cur = document.getElementById(`grid-${name}-cursor`);
-  if (!box || !cur) return true;
-  const b = box.getBoundingClientRect(), c = cur.getBoundingClientRect();
-  return c.bottom > b.top && c.top < b.bottom;
+// Auto-stick to the bottom, per pane. `stick` means "pinned to the live
+// prompt". It must flip only on a genuine user scroll, and the trap is that
+// rebuilding a grid also fires scroll events: a morph clamping scrollTop, and
+// our own stick write, both look like scrolls. Reading those as user intent is
+// what unpinned a pane mid-stream. The `mutating` window swallows every scroll
+// event a patch triggers, so stick survives rebuilds.
+//
+// The old rule -- keep the cursor visible -- is not the same thing. A TUI that
+// draws rows below its cursor (the Claude Code CLI input box, with its hint
+// line under it) satisfies "cursor in view" while its last rows sit below the
+// fold, so the pane stopped tracking.
+const stick = {};
+let mutating = false;
+let mutatingClear = null;
+function beginMutating() {
+  mutating = true;
+  clearTimeout(mutatingClear);
+  // Clear on the next task. A mutation's scroll events fire in the rendering
+  // step before then, so they land inside the window; a later user scroll does
+  // not.
+  mutatingClear = setTimeout(() => { mutating = false; }, 0);
 }
-function followCursor(name) {
-  const box = document.querySelector(`.pane[data-pane="${name}"] .scroll`);
-  const cur = document.getElementById(`grid-${name}-cursor`);
-  if (!box || !cur) return;
-  const b = box.getBoundingClientRect(), c = cur.getBoundingClientRect();
-  if (c.top < b.top) box.scrollTop -= (b.top - c.top);
-  else if (c.bottom > b.bottom) box.scrollTop += (c.bottom - b.bottom);
+function scrollBox(name) {
+  return document.querySelector(`.pane[data-pane="${name}"] .scroll`);
+}
+function atBottom(box) {
+  return box.scrollHeight - box.scrollTop - box.clientHeight < 8;
+}
+function stickToBottom(name) {
+  const box = scrollBox(name);
+  if (!box) return;
+  if (box.scrollTop !== box.scrollHeight - box.clientHeight) {
+    box.scrollTop = box.scrollHeight;
+  }
 }
 function reveal(id) {
   paneOf(id)?.closest(".column")?.scrollIntoView({
@@ -153,9 +180,10 @@ function wirePane(p) {
   const name = p.dataset.pane;
   if (!name || p.dataset.wired) return;
   p.dataset.wired = "1";
-  follow[name] = true;
-  p.querySelector(".scroll")?.addEventListener("scroll", () => {
-    follow[name] = cursorInView(name);
+  stick[name] = true;
+  p.querySelector(".scroll")?.addEventListener("scroll", ev => {
+    if (mutating) return;
+    stick[name] = atBottom(ev.currentTarget);
   });
 }
 function wireAll() {
@@ -185,10 +213,22 @@ document.getElementById("mode-badge").addEventListener("click", () => {
   if (mode === "focus" && selected) parkFocus();
 });
 
-new MutationObserver(() => {
+// Every pane tracks its own output, not just the selected one. Datastar morphs
+// a patch in synchronously, so one observer batch is one server frame; the
+// panes it touched are the ones to re-pin.
+new MutationObserver(muts => {
+  beginMutating();
   wireAll();
-  if (selected && follow[selected]) followCursor(selected);
-}).observe(document.body, {childList: true, subtree: true});
+  const touched = new Set();
+  for (const m of muts) {
+    const el = m.target.nodeType === 1 ? m.target : m.target.parentElement;
+    const name = el?.closest?.(".pane")?.dataset.pane;
+    if (name) touched.add(name);
+  }
+  for (const name of touched) {
+    if (stick[name] !== false) stickToBottom(name);
+  }
+}).observe(document.body, {childList: true, subtree: true, characterData: true});
 addEventListener("resize", scheduleFit);
 document.fonts.ready.then(fit);
 
