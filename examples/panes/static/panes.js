@@ -105,14 +105,22 @@ function syncEmpty() {
 // One probe for the whole strip: every grid shares the same font metrics.
 // It carries the grid's own line-height so a measured row matches a rendered
 // one exactly -- measuring inside .scroll picked up the chrome line-height.
+// Cached, because the probe is a write into the tree the MutationObserver
+// watches: an uncached fit() mutates, the observer sees it and schedules
+// another fit, and the pair free-runs at the debounce interval. Metrics only
+// change when the font or the device pixel ratio does, so both invalidate it.
+let cellCache = null;
 function measureCell() {
+  if (cellCache) return cellCache;
   const probe = document.createElement("div");
   probe.className = "cell-probe";
   probe.textContent = "M".repeat(80);
   document.body.appendChild(probe);
   const r = probe.getBoundingClientRect();
   probe.remove();
-  return {w: r.width / 80, h: r.height};
+  if (!r.width || !r.height) return {w: 0, h: 0};
+  cellCache = {w: r.width / 80, h: r.height};
+  return cellCache;
 }
 
 const lastFit = {};
@@ -274,8 +282,8 @@ new MutationObserver(muts => {
     if (stick[name] !== false) stickToBottom(name);
   }
 }).observe(document.body, {childList: true, subtree: true, characterData: true});
-addEventListener("resize", scheduleFit);
-document.fonts.ready.then(fit);
+addEventListener("resize", () => { cellCache = null; scheduleFit(); });
+document.fonts.ready.then(() => { cellCache = null; fit(); });
 
 document.addEventListener("copy", ev => {
   const sel = getSelection(); if (!sel) return;
