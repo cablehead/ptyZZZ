@@ -5,6 +5,7 @@
 #
 # Run (needs store + services + datastar):
 #   http-nu --dev --datastar --services --store ./store 127.0.0.1:5111 examples/panes/serve.nu
+#   # add --tls <pem> to serve https, so browsers ask for brotli on /sse
 #
 # Layout: horizontal strip of 100ch columns. A column can stack several panes.
 # Close kills the pty. A restart respawns nu in each surviving slot.

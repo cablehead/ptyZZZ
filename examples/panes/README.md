@@ -39,6 +39,26 @@ From the repo root:
 
 Use a dedicated store if you also run root `serve.nu` or cube against `./store`.
 
+### https
+
+Add `--tls <pem>` to serve https. Make a self-signed pair first:
+
+    openssl req -x509 -newkey rsa:2048 -nodes -days 825 \
+      -keyout key.pem -out cert.pem \
+      -subj /CN=localhost -addext subjectAltName=DNS:localhost,IP:127.0.0.1
+    cat cert.pem key.pem > localhost.pem
+
+    http-nu --dev --datastar --services --tls localhost.pem --store ./store 127.0.0.1:5111 examples/panes/serve.nu
+
+This is what gets the /sse diff stream compressed. http-nu encodes responses
+with brotli and nothing else, and browsers only advertise `br` over https. On
+plain http the diffs go out raw. Typing `ls -la /usr/bin | first 40` four times
+sent 113546 bytes uncompressed against 2396 with brotli, a 47x reduction. TLS
+also turns on HTTP/2.
+
+`.static` responses skip the encoder, so `panes.css` and `panes.js` still go out
+raw. That cost is one-time per load. The diff stream is the traffic that matters.
+
 ## Tests
 
 `source` the handler and `do $c $req` (http-nu eval). Flags go after `eval`:
