@@ -93,10 +93,13 @@ function setSelected(id, {focus = false, scroll = true} = {}) {
   paneEls().forEach(p => p.classList.toggle("selected", p.dataset.pane === selected));
   if (focus) setMode("focus");
   if (!selected) { setZoom(false); return; }
+  // scroll:false is wireAll re-asserting the current selection on every frame,
+  // not a move. Only a deliberate move refits.
+  if (!scroll) return;
   // Zoom rides the .selected class, so moving the selection moves the zoom.
   // The pane arriving was hidden: it needs a fit for its new size and a re-pin.
-  if (zoom) { scheduleFit(); restick(); }
-  else if (scroll) reveal(selected);
+  if (zoom) { fitNow(); restick(); }
+  else reveal(selected);
 }
 function syncEmpty() {
   document.getElementById("empty").hidden = !!document.querySelector(".column");
@@ -162,9 +165,18 @@ function fit() {
   }
 }
 let fitTimer;
+// Window drags fire continuously, and every event that crosses a cell boundary
+// would cost a resize frame and a forced keyframe, so they coalesce.
 function scheduleFit() {
   clearTimeout(fitTimer);
   fitTimer = setTimeout(fit, 80);
+}
+// A discrete toggle has one known final geometry. There is nothing to coalesce
+// and the 80ms is pure latency: it was the whole gap between the pane resizing
+// and the pty catching up (80ms of a measured 96ms).
+function fitNow() {
+  clearTimeout(fitTimer);
+  fit();
 }
 
 // Auto-stick to the bottom, per pane. `stick` means "pinned to the live
@@ -215,7 +227,7 @@ function setZoom(on) {
   zoom = !!on && !!selected;
   try { sessionStorage.setItem("panes.zoom", zoom ? "1" : ""); } catch {}
   document.body.classList.toggle("zoom", zoom);
-  scheduleFit();
+  fitNow();
   restick();
 }
 // A hidden pane has no scrollHeight, so stickToBottom cannot run on it while
