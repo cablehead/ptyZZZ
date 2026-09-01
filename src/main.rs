@@ -33,7 +33,7 @@ use wezterm_term::{
 const ENGINE: &str = "wezterm-term";
 
 #[derive(Parser)]
-#[command(about = "own one pty, speak JSONL on stdio")]
+#[command(version, about = "own one pty, speak JSONL on stdio")]
 struct Args {
     #[command(subcommand)]
     sub: Sub,
