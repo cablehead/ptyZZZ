@@ -6,3 +6,4 @@ node_modules
 /localhost.pem
 /.claude/worktrees/
 /.claude/settings.local.json
+/panes-store
