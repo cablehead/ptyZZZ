@@ -207,12 +207,28 @@ function scrollBox(name) {
 function atBottom(box) {
   return box.scrollHeight - box.scrollTop - box.clientHeight < 8;
 }
+// "Bottom" is the last row that carries something, not the end of the scroll
+// range. A resize grows the pty's viewport before the app has drawn into the new
+// rows, so the grid legitimately ends in blank lines; pinning to
+// scrollHeight - clientHeight parks the view in that empty tail with the prompt
+// above the fold. The cursor counts as content, so a TUI that parks it below its
+// last text still keeps it in view.
 function stickToBottom(name) {
   const box = scrollBox(name);
   if (!box) return;
-  if (box.scrollTop !== box.scrollHeight - box.clientHeight) {
-    box.scrollTop = box.scrollHeight;
+  const boxTop = box.getBoundingClientRect().top;
+  const bottomOf = el => el.getBoundingClientRect().bottom - boxTop + box.scrollTop;
+  let target = 0;
+  const rows = box.querySelectorAll(".row");
+  // Blank rows cluster at the end, so this scan almost always stops immediately.
+  for (let i = rows.length - 1; i >= 0; i--) {
+    if (rows[i].textContent.trim() !== "") { target = bottomOf(rows[i]); break; }
   }
+  const cur = box.querySelector(".cursor");
+  if (cur) target = Math.max(target, bottomOf(cur));
+  const max = box.scrollHeight - box.clientHeight;
+  const top = target ? Math.max(0, Math.min(Math.ceil(target) - box.clientHeight, max)) : max;
+  if (box.scrollTop !== top) box.scrollTop = top;
 }
 function reveal(id) {
   paneOf(id)?.closest(".column")?.scrollIntoView({
