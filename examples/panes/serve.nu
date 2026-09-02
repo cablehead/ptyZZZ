@@ -131,37 +131,83 @@ if ($HTTP_NU.store? | default null) != null {
       | metadata set --content-type "text/html"
     })
 
+    # Play the stream from the beginning and materialize the current view.
+    # Liveness folds from the service lifecycle (create/active up, term down), so
+    # a closed pane's keyframe is folded over rather than deleted -- nothing is
+    # removed from the store. Replay emits nothing and reads no CAS: the fold
+    # carries hashes only. xs.threshold marks the end of history, and there the
+    # view goes out once, one keyframe per live pane. After that frames stream
+    # through as they arrive.
     (route {method: "GET", path: "/sse"} {|req ctx|
       .cat --follow
-      | where {|f|
-          $f.topic == "panes.patch" or ($f.topic | str starts-with "pty-") and (
-            ($f.topic | str ends-with ".screen") or ($f.topic | str ends-with ".diff")
-          )
-        }
-      | each {|f|
-          if $f.topic == "panes.patch" {
+      | generate {|f, s = {live: [], screens: {}, past: false}|
+          let parts = ($f.topic | split row ".")
+
+          if $f.topic == "xs.threshold" {
+            let cols = ($s.screens | columns)
+            let patches = ($s.live | each {|id|
+              if ($id in $cols) { .cas ($s.screens | get $id) | to datastar-patch-elements }
+            } | compact)
+            return {out: $patches, next: ($s | update past true)}
+          }
+
+          if ($f.topic | str starts-with "xs.service.pty-") {
+            let id = ($parts | get 2 | str replace "pty-" "")
+            let kind = ($parts | get 3)
+            if $kind in ["create" "active"] {
+              return {next: ($s | update live ($s.live | append $id | uniq))}
+            }
+            if $kind == "term" {
+              let cols = ($s.screens | columns)
+              return {next: ($s
+                | update live ($s.live | where {|x| $x != $id})
+                | update screens (if ($id in $cols) { $s.screens | reject $id } else { $s.screens }))}
+            }
+            return {next: $s}
+          }
+
+          if ($f.topic | str starts-with "pty-") {
+            let id = ($parts | get 0 | str replace "pty-" "")
+            let kind = ($parts | get 1)
+            if not $s.past {
+              # Carry the hash, do not read it. Only what survives the fold is
+              # ever fetched, and only once, at the threshold.
+              if $kind == "screen" {
+                return {next: ($s | update screens ($s.screens | upsert $id $f.hash))}
+              }
+              return {next: $s}
+            }
+            if not ($id in $s.live) { return {next: $s} }
+            if $kind == "screen" {
+              return {out: [(.cas $f.hash | to datastar-patch-elements)], next: $s}
+            }
+            if $kind == "diff" {
+              let d = $f.meta.body | from json
+              return {out: ([
+                (if ($d.patch | is-not-empty) { $d.patch | to datastar-patch-elements })
+                (if ($d.append | is-not-empty) {
+                  $d.append | to datastar-patch-elements --mode append --selector $"#($d.target)"
+                })
+                (if ($d.trim | is-not-empty) {
+                  "" | to datastar-patch-elements --mode remove --selector ($d.trim | each {|t| $"#($t)"} | str join ",")
+                })
+              ] | compact), next: $s}
+            }
+            return {next: $s}
+          }
+
+          if $f.topic == "panes.patch" and $s.past {
             let p = $f.meta
-            [(
+            return {out: [(
               if $p.mode == "remove" {
                 "" | to datastar-patch-elements --mode remove --selector $p.selector
               } else {
                 $p.html | to datastar-patch-elements --mode $p.mode --selector $p.selector
               }
-            )]
-          } else if ($f.topic | str ends-with ".screen") {
-            [(.cas $f.hash | to datastar-patch-elements)]
-          } else {
-            let d = $f.meta.body | from json
-            [
-              (if ($d.patch | is-not-empty) { $d.patch | to datastar-patch-elements })
-              (if ($d.append | is-not-empty) {
-                $d.append | to datastar-patch-elements --mode append --selector $"#($d.target)"
-              })
-              (if ($d.trim | is-not-empty) {
-                "" | to datastar-patch-elements --mode remove --selector ($d.trim | each {|id| $"#($id)"} | str join ",")
-              })
-            ] | compact
+            )], next: $s}
           }
+
+          {next: $s}
         }
       | flatten
       | to sse
@@ -186,7 +232,6 @@ if ($HTTP_NU.store? | default null) != null {
       let pid = $"p($n)"
       let cid = $"c($n)"
       let col = {id: $cid, panes: [$pid]}
-      spawn-pane $pid
       let loc = if $after == "" { null } else { locate $l $after }
       let cols = if $loc == null {
         $l.columns | append $col
@@ -202,6 +247,14 @@ if ($HTTP_NU.store? | default null) != null {
       } else {
         emit-patch "after" $"#col-($loc.col_id)" (html-column $col)
       }
+      # After the patch, never before. Both go out on one ordered .cat --follow,
+      # and a pty emits its first keyframe within milliseconds of spawning. Spawn
+      # first and that keyframe reaches the client ahead of the element it targets:
+      # datastar drops it as PatchElementsNoTargetsFound, and the pane then gets
+      # only row-level diffs against a grid that never got its keyframe. It stays
+      # blank until the 5s healing keyframe, or until a keypress damages enough
+      # rows to force one.
+      spawn-pane $pid
       {id: $pid, col: $cid} | to json | metadata set --content-type "application/json"
     })
 
@@ -213,7 +266,6 @@ if ($HTTP_NU.store? | default null) != null {
         "unknown pane" | metadata set { merge {'http.response': {status: 400}} }
       } else {
         let pid = $"p(next-n)"
-        spawn-pane $pid
         let cols = $l.columns | enumerate | each {|c|
           if $c.index == $loc.ci {
             $c.item | update panes ($c.item.panes | append $pid)
@@ -221,6 +273,7 @@ if ($HTTP_NU.store? | default null) != null {
         }
         save-layout {columns: $cols}
         emit-patch "append" $"#col-($loc.col_id)" (html-pane $pid)
+        spawn-pane $pid  # after the patch -- see /pane/new-column
         {id: $pid, col: $loc.col_id} | to json | metadata set --content-type "application/json"
       }
     })
