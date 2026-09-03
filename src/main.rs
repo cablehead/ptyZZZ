@@ -413,6 +413,16 @@ fn main() {
     // the deadline is already past, so the first change emits immediately;
     // during a burst, production starts on a constant cadence, and the time
     // spent producing a frame is not charged against the gate.
+    //
+    // The leading edge alone tears a line in half. The tty line discipline
+    // splits one `write("line\n")` into two master reads -- the text, then the
+    // ONLCR `\r\n` -- microseconds apart. Emitting on the first read publishes
+    // the row without the newline that scrolls it, and the scroll then lands a
+    // whole `coalesce` window later: the client paints the line, then jerks the
+    // pane up a row. Settling for a millisecond covers that gap. Keystroke echo
+    // goes from ~0.4ms to ~1.4ms, still an order of magnitude inside the window
+    // leading-edge pacing was introduced to save.
+    const SETTLE: Duration = Duration::from_millis(1);
     let mut last_frame_at = Instant::now().checked_sub(coalesce).unwrap_or_else(Instant::now);
     loop {
         {
@@ -441,7 +451,12 @@ fn main() {
             last_gen = *g;
         }
         if !done.load(Ordering::SeqCst) {
-            std::thread::sleep((last_frame_at + coalesce).saturating_duration_since(Instant::now()));
+            // Never shorter than SETTLE, so a torn write is whole before it is
+            // rendered. Mid-burst the gate already dominates and SETTLE costs
+            // nothing. Capped by `coalesce` so --coalesce 0 still means no
+            // pacing at all.
+            let gate = (last_frame_at + coalesce).saturating_duration_since(Instant::now());
+            std::thread::sleep(gate.max(SETTLE.min(coalesce)));
             let (lock, _) = &*dirty;
             last_gen = *lock.lock().unwrap();
         }
