@@ -1,6 +1,14 @@
 ## Git Commit Style Preferences
 
-**NEVER commit unless explicitly asked by the user.**
+Commit and push after each stable change. A stable change builds, passes
+tests, and leaves the tree in a state someone else could pick up.
+
+- If the change completes the task, commit on the current branch and push.
+- If the change is a stopping point but the task is not complete, create a
+  branch with a short descriptive slug (for example `rio-vt-merge-main`),
+  commit there, and push to it. Keep pushing to that branch at each later
+  stopping point.
+- Never leave a resolved merge or a passing intermediate state uncommitted.
 
 When committing: review `git diff`
 
