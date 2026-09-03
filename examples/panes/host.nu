@@ -1,10 +1,11 @@
 # examples/panes -- niri-style ptyZZZ columns you can open, split, and close.
 #
-# Glue only: layout in the store, one duplex pty service per pane, routes.
-# Markup is minijinja under templates/; CSS/JS under static/.
+# host: owns the ptys, runs with --services, writes its own stream. Pairs
+# with viewer.nu, which renders a replica of this stream read-only. See
+# examples/panes/README.md for the split.
 #
 # Run (needs store + services + datastar):
-#   http-nu --dev --datastar --services --store ./store 127.0.0.1:5111 examples/panes/serve.nu
+#   http-nu --dev --datastar --services --store ./host-store 127.0.0.1:5111 examples/panes/host.nu
 #   # add --tls <pem> to serve https, so browsers ask for brotli on /sse
 #
 # Layout: horizontal strip of 100ch columns. A column can stack several panes.
@@ -12,11 +13,9 @@
 
 use http-nu/datastar *
 use http-nu/router *
+use ./common.nu *
 
-const HERE = (path self | path dirname)
-const TPL = ($HERE | path join "templates")
 const PTYZZZ = ($HERE | path join ".." ".." "target" "release" "ptyZZZ" | path expand)
-const FONTS = ($HERE | path join ".." ".." "static" "fonts")
 
 if not ($PTYZZZ | path exists) {
   error make {msg: $"panes: missing ($PTYZZZ) -- cargo build --release"}
@@ -55,11 +54,6 @@ def spawn-pane [id: string] {
 
 def kill-pane [id: string] {
   null | .append $"xs.service.pty-($id).term" | ignore
-}
-
-def layout [] {
-  let f = .last "panes.layout"
-  if $f == null { {columns: []} } else { $f.meta }
 }
 
 def save-layout [l: record] {
@@ -137,105 +131,9 @@ if ($HTTP_NU.store? | default null) != null {
       | metadata set --content-type "text/html"
     })
 
-    # One read: start at the oldest retained keyframe and follow from there.
-    # `--from` is inclusive, so every live pane's keyframe is in the replay (each
-    # is at or after the oldest), and everything appended since follows in order.
-    # No snapshot-then-subscribe gap, so nothing needs interleaving.
-    #
-    # Cost is bounded by time since that keyframe, not by store size: `last:1`
-    # keeps one screen frame per pane, and the rest of the history is skipped.
-    #
-    # Diffs are `--ttl ephemeral` and never hit disk, so one appended before this
-    # read started is gone whatever we do. That is what `base` handles: a diff is
-    # forwarded only when it chains to the last frame this connection sent, and a
-    # dropped one is repaired by the healing keyframe -- receiving a diff proves
-    # the pane is dirty, so one is due within ptyZZZ's --keyframe-interval.
-    (route {method: "GET", path: "/sse"} {|req ctx|
-      let live = (try { layout | get columns | each {|c| $c.panes} | flatten } catch { [] })
-      let seeds = ($live | each {|id| .last $"pty-($id).screen"} | compact)
-      # Start at the oldest pane keyframe. With no panes yet there is nothing to
-      # seed, so anchor on the layout frame instead -- ensure-panes writes one at
-      # startup, so this is always present and keeps the read to a single shape.
-      let from = (if ($seeds | is-empty) {
-        (.last "panes.layout" | get id)
-      } else {
-        $seeds | get id | sort | first
-      })
-
-      .cat --follow --from $from
-      | generate {|f, s|
-          let parts = ($f.topic | split row ".")
-
-          # Liveness, so a closed pane's frames are not forwarded to a page that
-          # no longer has an element for them.
-          if ($f.topic | str starts-with "xs.service.pty-") {
-            let id = ($parts | get 2 | str replace "pty-" "")
-            let kind = ($parts | get 3)
-            if $kind in ["create" "active"] {
-              return {next: ($s | update live ($s.live | append $id | uniq))}
-            }
-            if $kind == "term" {
-              return {next: ($s | update live ($s.live | where {|x| $x != $id}))}
-            }
-            return {next: $s}
-          }
-
-          if ($f.topic | str starts-with "pty-") {
-            let id = ($parts | get 0 | str replace "pty-" "")
-            let kind = ($parts | get 1)
-            let held = (if ($id in ($s.sent | columns)) { $s.sent | get $id } else { null })
-            if not ($id in $s.live) { return {next: $s} }
-
-            if $kind == "screen" {
-              # A keyframe is self-contained: adopt its seqno as the new basis.
-              return {
-                out: [(.cas $f.hash | to datastar-patch-elements)]
-                next: ($s | update sent ($s.sent | upsert $id ($f.meta.seqno)))
-              }
-            }
-
-            if $kind == "diff" {
-              let d = ($f.meta.body | from json)
-              # Only forward a diff that chains to what we last sent. Anything
-              # else means frames were missed; drop it and wait for the heal.
-              if $held == null or $d.base != $held { return {next: $s} }
-              let o = ([
-                (if ($d.patch | is-not-empty) { $d.patch | to datastar-patch-elements })
-                (if ($d.append | is-not-empty) {
-                  $d.append | to datastar-patch-elements --mode append --selector $"#($d.target)"
-                })
-                (if ($d.trim | is-not-empty) {
-                  "" | to datastar-patch-elements --mode remove --selector ($d.trim | each {|t| $"#($t)"} | str join ",")
-                })
-              ] | compact)
-              return {
-                out: $o
-                next: ($s | update sent ($s.sent | upsert $id $d.seqno))
-              }
-            }
-            return {next: $s}
-          }
-
-          if $f.topic == "panes.patch" {
-            let p = $f.meta
-            if "signals" in ($p | columns) {
-              return {out: [($p.signals | to datastar-patch-signals)], next: $s}
-            }
-            return {out: [(
-              if $p.mode == "remove" {
-                "" | to datastar-patch-elements --mode remove --selector $p.selector
-              } else {
-                $p.html | to datastar-patch-elements --mode $p.mode --selector $p.selector
-              }
-            )], next: $s}
-          }
-
-          {next: $s}
-        } {live: $live, sent: {}}
-      | flatten
-      | to sse
-      | metadata set --content-type "text/event-stream"
-    })
+    # The fold itself lives in common.nu, shared with viewer.nu: same shape
+    # whether it reads the local store (here, core omitted) or a replica.
+    (route {method: "GET", path: "/sse"} {|req ctx| sse-response })
 
     # A pong is just an element patch, so it rides the pathway panes.patch
     # already owns: no new frame type, no new branch in the /sse fold. Echoing

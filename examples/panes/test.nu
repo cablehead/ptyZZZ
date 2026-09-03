@@ -1,10 +1,10 @@
 use std/assert
 
-# Endpoint tests: `source serve.nu; do $c $req`.
+# Endpoint tests: `source host.nu; do $c $req`.
 #   http-nu eval --datastar --store /tmp/panes-test --services examples/panes/test.nu
 
 const script_dir = path self | path dirname
-let c = source ($script_dir | path join serve.nu)
+let c = source ($script_dir | path join host.nu)
 
 let page = (do $c {method: "GET", path: "/", headers: {}, query: {}} | into string)
 assert ($page | str contains "<!doctype html") "GET / is html"

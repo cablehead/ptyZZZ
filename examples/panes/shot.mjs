@@ -16,7 +16,7 @@ const base = `http://127.0.0.1:${port}`;
 const store = mkdtempSync(join(tmpdir(), "panes-shot-"));
 const srv = spawn(
   HTTP_NU,
-  ["--dev", "--datastar", "--services", "--store", store, `127.0.0.1:${port}`, join(HERE, "serve.nu")],
+  ["--dev", "--datastar", "--services", "--store", store, `127.0.0.1:${port}`, join(HERE, "host.nu")],
   { cwd: ROOT, stdio: "ignore" },
 );
 const reap = () => {
