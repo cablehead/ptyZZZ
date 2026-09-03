@@ -35,7 +35,9 @@ and as a healing checkpoint every `--keyframe-interval` seconds (default 5)
 while diffs are flowing. The adapter stores the latest keyframe (`ttl last:1`)
 as the join point for new subscribers.
 
-`base` is the seqno the diff was computed against. A subscriber holding a frame
+`base` is the seqno of the last frame actually sent, which is not always the
+previous seqno: damage that renders to identical html emits nothing, and those
+skipped seqnos must not appear as a base. A subscriber holding a frame
 with seqno `S` applies a diff only when `base == S`, then advances to `seqno`.
 Any other `base` means frames were missed in between: drop the diff and wait.
 That wait is bounded, because a diff only exists if the pane is dirty, so a

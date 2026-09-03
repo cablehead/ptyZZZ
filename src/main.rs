@@ -510,7 +510,13 @@ struct EmitState {
     /// rendered row html by stable row index; the keyframe is the ordered
     /// concatenation of this map
     cache: BTreeMap<StableRowIndex, String>,
+    /// Damage basis for get_changed_stable_rows: advances on every produce(),
+    /// including the ones that emit nothing, so a no-op redraw is not rescanned.
     last_seqno: usize,
+    /// seqno of the last frame actually sent, which is what a diff names as its
+    /// base. Distinct from last_seqno: a produce() that emits nothing advances
+    /// the basis but not what the subscriber holds.
+    emitted_seqno: usize,
     last_base: StableRowIndex,
     last_max: StableRowIndex,
     last_cols: usize,
@@ -535,6 +541,7 @@ impl EmitState {
             target,
             cache: BTreeMap::new(),
             last_seqno: 0,
+            emitted_seqno: 0,
             last_base: 0,
             last_max: 0,
             last_cols: 0,
@@ -735,12 +742,13 @@ impl EmitState {
                 .collect();
             self.dirty_since_keyframe = true;
             serde_json::json!({
-                "t":"diff","seqno":seqno,"base":self.last_seqno,"target":self.target,
+                "t":"diff","seqno":seqno,"base":self.emitted_seqno,"target":self.target,
                 "patch":patch,"append":append,"trim":trim
             })
         };
 
         self.last_seqno = seqno;
+        self.emitted_seqno = seqno;
         self.last_base = base;
         self.last_max = max;
         self.last_cols = cols;
@@ -1138,6 +1146,37 @@ mod tests {
         let f = st.produce(&mut t, false).expect("emits a frame");
         assert_eq!(f["t"], "screen");
         assert!(f.get("base").is_none(), "keyframes do not chain");
+    }
+
+    /// A produce() that emits nothing must not advance what the next diff names
+    /// as its base. wezterm bumps its seqno for damage that renders to identical
+    /// html (a prompt redrawing the same cells), and produce() returns None for
+    /// those. If that seqno became the next diff's base, the client would be
+    /// comparing against a frame it was never sent, drop a good diff, and sit
+    /// stale until the healing keyframe.
+    #[test]
+    fn a_no_op_produce_does_not_advance_base() {
+        let mut t = term(24, 80);
+        let mut st = EmitState::new("grid".to_string());
+
+        t.advance_bytes(b"hello");
+        let held = seqno(&st.produce(&mut t, false).expect("keyframe"));
+
+        // Rewrite the same cells: damage, but nothing visibly changes.
+        t.advance_bytes(b"\x1b[Hhello");
+        assert!(
+            st.produce(&mut t, false).is_none(),
+            "identical redraw must emit nothing"
+        );
+
+        t.advance_bytes(b"\r\nworld");
+        let f = st.produce(&mut t, false).expect("diff");
+        assert_eq!(f["t"], "diff");
+        assert_eq!(
+            f["base"].as_u64().expect("diff carries base"),
+            held,
+            "base must name the last frame actually sent, not a skipped seqno"
+        );
     }
 
     /// A gap is detectable: skipping a produce() leaves the subscriber's held
