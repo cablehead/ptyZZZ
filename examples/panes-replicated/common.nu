@@ -1,16 +1,37 @@
-# examples/panes -- shared read side between host.nu and viewer.nu.
+# examples/panes-replicated -- shared read side.
 #
-# host writes pty-*.screen, pty-*.diff, xs.service.pty-*.* -- the content a
-# pty produces. viewer writes panes.layout, panes.patch, panes.seq -- the UI
-# state describing where panes live on screen. viewer is the only browser
-# surface (see viewer.nu), so its `/sse` folds an interleave of its own store
-# and a replica of host's; layout is always local, since only viewer ever
-# writes it.
+# One store per host, and the host's store is the only writer of anything a
+# pty produces (pty-*.screen, pty-*.diff, xs.service.pty-*.*). Opening or
+# killing a pane is an RPC to that store -- `xs append <host-addr> ...` --
+# not a local append; see viewer.nu. That is one writer per log, same as
+# ever: the host's store mints every id and orders every frame, an RPC
+# with two clients is not two writers. Reads never touch a host directly:
+# viewer replicates each one (`xs.replica.<name>.create`) and folds them
+# with `interleave`, which is what lets this scale to N hosts, one screen,
+# rather than being wired to exactly one.
+#
+# Layout (panes.layout/panes.patch/panes.seq) is local to viewer -- it is
+# how *this* viewer arranges panes on screen, not something any host needs
+# to know about.
 
 use http-nu/datastar *
 
 export const HERE = (path self | path dirname)
+# static/ is shared with examples/panes/ by path reference: `.static` serves
+# it as plain files, nothing about the split changes what's in it.
+#
+# templates/ is duplicated, not shared: `.mj compile`'s loader resolves
+# `{% include %}` against the directory of the file it first compiled, and
+# that resolution recurses through the whole include chain (page.html includes
+# strip.html includes column.html includes pane.html, all against page.html's
+# own directory) -- there is no way to point just column.html/pane.html
+# elsewhere without also moving everything upstream of them in that chain.
+# column.html and pane.html render a `{id, host}` record here where the
+# original renders a bare pane id (a pane's host is part of viewer's layout
+# now); page.html/strip.html/panel.html are unchanged copies.
+export const PANES_DIR = ($HERE | path join ".." "panes")
 export const TPL = ($HERE | path join "templates")
+export const STATIC = ($PANES_DIR | path join "static")
 export const FONTS = ($HERE | path join ".." ".." "static" "fonts")
 
 # `.last`/`.cas` take core as a `--flag`; a null core means "the local store".
@@ -26,8 +47,12 @@ def cat-local [from?: string] {
   if $from == null { .cat --follow } else { .cat --follow --from $from }
 }
 
-def cat-from [core: string, from?: string] {
-  if $from == null { .cat $core --follow } else { .cat $core --follow --from $from }
+# Tags every frame with which host's replica it came from, so a fold reading
+# N interleaved hosts still knows where to dereference a keyframe's hash --
+# `interleave`'s output doesn't carry that on its own.
+def cat-tagged [host: string, from?: string] {
+  (if $from == null { .cat $host --follow } else { .cat $host --follow --from $from })
+  | each {|f| $f | insert _host $host }
 }
 
 export def layout [] {
@@ -35,28 +60,26 @@ export def layout [] {
   if $f == null { {columns: []} } else { $f.meta }
 }
 
-# viewer's `/sse`: an interleave of its own store (panes.layout/panes.patch,
-# the only things it writes) and `host_core`, a replica of host (pty-*.screen/
-# diff, xs.service.pty-*.* -- the only things host writes). Per-frame handling
-# is unchanged from the single-store version; only the read is now two
-# streams merged instead of one, since content that used to share a journal
-# now lives on either side of the host/viewer split.
-export def sse-response [host_core: string] {
-  let live = (try { layout | get columns | each {|c| $c.panes} | flatten } catch { [] })
-  let seeds = ($live | each {|id| last-core $"pty-($id).screen" $host_core} | compact)
-  # Host side: replay from the oldest live keyframe, same reasoning as
-  # before -- `--from` is inclusive, so every live pane's keyframe is caught.
-  # No live panes yet (a fresh workspace) means nothing to seed; read from
-  # the start of the (empty, so far) replica.
-  let from_host = (if ($seeds | is-empty) { null } else { $seeds | get id | sort | first })
-  # Local side: replay from the current layout snapshot's own id. Every
-  # layout mutation route saves layout *before* emitting its patch, so this
-  # still catches a patch from the same operation that produced the layout
-  # we just read (patch id > layout id); anything older is already reflected
-  # in that snapshot, so no need to replay it again.
+# viewer's `/sse`: an interleave of its own store (panes.layout/panes.patch)
+# and one replica per host in `hosts` (pty-*.screen/diff, xs.service.pty-*.*).
+# Per-frame handling is otherwise unchanged from a single-store fold; a
+# keyframe just dereferences its hash against whichever host tagged it,
+# rather than a single fixed core.
+export def sse-response [hosts: list<string>] {
+  let live = (try { layout | get columns | each {|c| $c.panes} | flatten | get id } catch { [] })
   let from_local = (try { .last "panes.layout" | get id } catch { null })
 
-  interleave { cat-local $from_local } { cat-from $host_core $from_host }
+  let host_branches = ($hosts | each {|h|
+    let seeds = ($live | each {|id| last-core $"pty-($id).screen" $h} | compact)
+    # Replay from the oldest keyframe of a pane living on *this* host --
+    # `--from` is inclusive, so that catches all of them. No live panes on
+    # this host yet means nothing to seed; read from the start of its
+    # replica.
+    let from_h = (if ($seeds | is-empty) { null } else { $seeds | get id | sort | first })
+    {|| cat-tagged $h $from_h }
+  })
+
+  interleave ...([{|| cat-local $from_local }] | append $host_branches)
   | generate {|f, s|
       let parts = ($f.topic | split row ".")
 
@@ -81,10 +104,8 @@ export def sse-response [host_core: string] {
 
         if $kind == "screen" {
           # A keyframe is self-contained: adopt its seqno as the new basis.
-          # Screen content always lives on host's side, whichever branch of
-          # the interleave this frame arrived on.
           return {
-            out: [(cas-core $f.hash $host_core | to datastar-patch-elements)]
+            out: [(cas-core $f.hash $f._host | to datastar-patch-elements)]
             next: ($s | update sent ($s.sent | upsert $id ($f.meta.seqno)))
           }
         }
