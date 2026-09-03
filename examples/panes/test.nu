@@ -1,10 +1,16 @@
 use std/assert
 
-# Endpoint tests: `source host.nu; do $c $req`.
-#   http-nu eval --datastar --store /tmp/panes-test --services examples/panes/test.nu
+# Layout-mechanics endpoint tests: `source viewer.nu; do $c $req`. These
+# cover everything viewer owns outright (page rendering, layout mutation,
+# panes.patch forwarding) without a live pty, since after the host/viewer
+# split a real pty only exists on host, driven by its dispatcher reacting to
+# viewer's intents -- see test-viewer.nu for the two-process version of this
+# same test that drives it end to end (spawn, input, echo).
+#
+#   http-nu eval --datastar --store /tmp/panes-test examples/panes/test.nu
 
 const script_dir = path self | path dirname
-let c = source ($script_dir | path join host.nu)
+let c = source ($script_dir | path join viewer.nu)
 
 let page = (do $c {method: "GET", path: "/", headers: {}, query: {}} | into string)
 assert ($page | str contains "<!doctype html") "GET / is html"
@@ -15,23 +21,6 @@ assert ($page | str contains "/static/panes.js") "GET / loads static js"
 assert ($page | str contains "/datastar@1.0.2.js") "GET / loads datastar"
 assert (not ($page | str contains "id=split")) "no root serve.nu split toggle"
 assert (not ($page | str contains "PTYZZZ_BINS")) "no PTYZZZ_BINS chrome"
-
-mut ready = false
-for _ in 1..50 {
-  sleep 100ms
-  if (.last "pty-p1.screen" | is-not-empty) { $ready = true; break }
-}
-assert $ready "pty-p1 emitted a screen keyframe"
-(({t: "input", b: "echo panes-ok\n"} | to json --raw) + "\n") | do $c {method: "POST", path: "/input", headers: {}, query: {pane: "p1"}} | ignore
-mut seen = false
-for _ in 1..50 {
-  sleep 100ms
-  let f = .last "pty-p1.screen"
-  if $f == null { continue }
-  let html = .cas $f.hash
-  if ($html | str contains "panes-ok") { $seen = true; break }
-}
-assert $seen "pty-p1 screen shows echo panes-ok after /input"
 
 let n1 = (do $c {method: "POST", path: "/pane/new-column", headers: {}, query: {after: "p1"}} | into string | from json)
 assert ($n1.id == "p2") $"new-column id p2, got ($n1.id)"
@@ -75,38 +64,13 @@ assert ($n2.id | str starts-with "p") "new-column from empty returns a pane id"
 let page5 = (do $c {method: "GET", path: "/", headers: {}, query: {}} | into string)
 assert ($page5 | str contains $"grid-($n2.id)") "empty workspace can open a column"
 
-# /sse forwards a diff only when it chains to the last frame that connection
-# sent. Diffs are normally ephemeral; these are stored so the --from replay
-# delivers them without needing a concurrent writer.
-'<div id="grid-seedpane">BASE</div>' | .append "pty-seedpane.screen" --ttl last:1 --meta {seqno: 100} | ignore
-def fake-diff [seqno: int, base: int, marker: string] {
-  null | .append "pty-seedpane.diff" --meta {body: ({
-    t: "diff", seqno: $seqno, base: $base, target: "grid-seedpane",
-    patch: $'<div class="row" id="grid-seedpane-r-($seqno)">($marker)</div>', append: "", trim: []
-  } | to json -r)} | ignore
-}
-fake-diff 200 100 "GOOD-ONE"
-fake-diff 900 999 "STALE"
-fake-diff 300 200 "GOOD-TWO"
-# A pong rides the same topic as an element patch; the fold forwards it as a
-# signal patch instead. Stored rather than ephemeral so the replay sees it.
-null | .append "panes.patch" --meta {signals: '{"pong":4242}'} | ignore
-let lay = (.last "panes.layout" | get meta)
-null | .append "panes.layout" --ttl last:1 --meta {columns: ($lay.columns | append {id: "cseed", panes: ["seedpane"]})} | ignore
-
-# `first` rejects a string stream, so take lines: four sse events are twelve.
-let sse = (null | do $c {method: "GET", path: "/sse", headers: {}, query: {}} | lines | first 12 | str join "\n")
-assert ($sse | str contains "BASE") "sse seeds the current keyframe"
-assert ($sse | str contains "GOOD-ONE") "a diff whose base matches is forwarded"
-assert ($sse | str contains "GOOD-TWO") "a diff chaining off the previous diff is forwarded"
-assert (not ($sse | str contains "STALE")) "a diff whose base does not match is dropped"
-assert ($sse | str contains "datastar-patch-signals") "a signals patch is forwarded as a signal event"
-assert ($sse | str contains "signals {\"pong\":4242}") "the pong carries the client send time back"
-
-# A pong is a heartbeat on a hot path, so like a keystroke it must not grow the
-# journal that every new /sse connection replays.
-let stored = (.cat | where topic == "panes.patch" | length)
-('{"ping":4242}') | do $c {method: "POST", path: "/ping", headers: {}, query: {}} | ignore
-assert ((.cat | where topic == "panes.patch" | length) == $stored) "a pong is ephemeral"
+# /sse is not exercised here on purpose: sse-response folds an interleave
+# of viewer's own store and a replica of host's (common.nu), and nushell's
+# `interleave` does not clean up early termination -- `first N`/`lines |
+# first N`, called in-process the way this file calls every other route,
+# hangs the whole eval rather than returning (a real HTTP connection over
+# a real port does not hit this, since the client disconnecting tears the
+# per-connection thread down a different way -- see test-viewer.nu, which
+# curls a real running viewer for exactly this).
 
 print "test.nu: all assertions passed"

@@ -10,32 +10,44 @@ dynamic multiplexer.
 
 ## host and viewer
 
-Two processes, two [xs](https://github.com/cablehead/xs) stores:
+Two processes, two [xs](https://github.com/cablehead/xs) stores, one writer
+per stream (ADR 0008 in the `xs` repo, and this repo's
+`~/task/xs-replica-panes.md` task 5):
 
-    host.nu     owns the ptys, runs with --services, writes its own stream
-    viewer.nu   renders a replica of host's stream, no --services
+    host.nu     owns the ptys, runs with --services, writes pty-*.screen,
+                pty-*.diff, xs.service.pty-*.* -- content a pty produces
+    viewer.nu   the only browser surface. Writes panes.layout, panes.patch,
+                panes.seq, pty-*.send, and pane intents -- panes.spawn.<id>,
+                panes.kill.<id> -- to its own stream. No --services.
 
-`common.nu` holds the read side both share: layout lookup and the `/sse`
-fold. It is a pure fold over one ordered `.cat --follow`, parametrized by an
-optional replica core name (`null` reads the local store) -- the only thing
-that changes between host and viewer is which store that fold reads.
+Each replicates the other (`xs.replica.<name>.create`) and reacts only to
+the frames that are its to react to. Viewer's `/sse` (`common.nu`'s
+`sse-response`) folds an interleave of its own store and a replica of
+host's, so a page render draws on both: layout/patches from one side, pty
+content from the other, merged the same way `interleave { .cat --follow } {
+.cat host --follow }` merges any two streams. Host's dispatcher (a
+`job spawn` background fold in host.nu, not an `xs.service` -- that closure
+text is a self-contained script reparsed in an isolated engine, so it
+couldn't see host.nu's own `spawn-pane`/`kill-pane` the way a same-session
+background job can) does the mirror image: it folds its own store with a
+replica of viewer's, and turns a `panes.spawn.<id>`/`panes.kill.<id>` intent
+into a real `xs.service.pty-<id>.create`/`.term`, and relays a `pty-<id>.send`
+into its own store so the pty's duplex service (which only watches host's
+own store) forwards it to the child's stdin.
 
-The viewer runs without `--services` and never calls `spawn-pane`/
-`ensure-panes` on purpose: `xs.service.pty-<id>.create` carries the closure
-that spawns a ptyZZZ process, and a viewer that both replicates those frames
-and runs `--services` would spawn its own pty -- a second, divergent
-terminal instead of a view of the host's.
-
-Currently only rendering is split (phase A): `/input` and `/pane/*` are still
-host-only routes, so drive the layout through host's port. See
-[docs/adr/0008-replica-stores.md](https://github.com/cablehead/xs/blob/feat/replica-stores/docs/adr/0008-replica-stores.md)
-in the `xs` repo for the replica model this leans on.
+Viewer never touches `xs.service.*` and never runs `--services`, on purpose:
+`xs.service.pty-<id>.create` carries the closure that spawns a ptyZZZ
+process, and a viewer that both replicated those frames *and* ran
+`--services` would spawn its own pty -- a second, divergent terminal instead
+of a view of the host's. Viewer's `spawn-pane`/`kill-pane` only ever append
+an intent, never `xs.service.*`, so this holds structurally: there is
+nothing on viewer's store `--services` could act on even by mistake.
 
 ## Layout
 
     common.nu                 shared read side: layout lookup, /sse fold
-    host.nu                    store layout + pty services + routes
-    viewer.nu                  replica of host's stream + read-only routes
+    host.nu                    pty services + a dispatcher reacting to viewer's intents
+    viewer.nu                  the browser surface: layout, patches, intents, replica of host
     templates/page.html        shell (minijinja; includes the rest)
     templates/strip.html       columns
     templates/column.html      one column of panes
@@ -83,31 +95,37 @@ selection rather than pinning to a pane id.
 
 From the repo root, in one terminal:
 
-    http-nu --dev --datastar --services --store ./host-store 127.0.0.1:5111 examples/panes/host.nu
+    PANES_VIEWER_ADDR=./viewer-store \
+      http-nu --dev --services --store ./host-store 127.0.0.1:5111 examples/panes/host.nu
 
 In another:
 
     PANES_HOST_ADDR=./host-store \
       http-nu --dev --datastar --store ./viewer-store 127.0.0.1:5112 examples/panes/viewer.nu
 
-Open http://127.0.0.1:5111 to drive it (spawn/split/close panes, type into
-them) and http://127.0.0.1:5112 to watch the same panes render from the
-replica. Use dedicated stores if you also run root `serve.nu` or cube
-against `./store`.
+Open http://127.0.0.1:5112 -- that is the only port with a browser UI now.
+http://127.0.0.1:5111 answers a plaintext "no browser routes here" on `/`,
+useful only to confirm host itself came up. Use dedicated stores if you also
+run root `serve.nu` or cube against `./store`.
 
-To run just the host, standalone, as it worked before the split: same
-command as above, any port, no viewer needed.
+Order doesn't matter at startup -- each side's `xs.replica.*.create` just
+waits and reconnects with backoff until the other's socket exists, and
+viewer's own layout/patches don't depend on host being up yet (though
+nothing will actually render inside a pane until host's dispatcher can
+reach it).
 
 ### https
 
-Add `--tls <pem>` to serve https. Make a self-signed pair first:
+Add `--tls <pem>` to serve https on viewer's port. Make a self-signed pair
+first:
 
     openssl req -x509 -newkey rsa:2048 -nodes -days 825 \
       -keyout key.pem -out cert.pem \
       -subj /CN=localhost -addext subjectAltName=DNS:localhost,IP:127.0.0.1
     cat cert.pem key.pem > localhost.pem
 
-    http-nu --dev --datastar --services --tls localhost.pem --store ./host-store 127.0.0.1:5111 examples/panes/host.nu
+    PANES_HOST_ADDR=./host-store \
+      http-nu --dev --datastar --tls localhost.pem --store ./viewer-store 127.0.0.1:5112 examples/panes/viewer.nu
 
 This is what gets the /sse diff stream compressed. http-nu encodes responses
 with brotli and nothing else, and browsers only advertise `br` over https. On
@@ -120,13 +138,20 @@ raw. That cost is one-time per load. The diff stream is the traffic that matters
 
 ## Tests
 
-`source` the handler and `do $c $req` (http-nu eval). Flags go after `eval`:
+`test.nu` sources viewer.nu in-process (`do $c $req`, http-nu eval) and
+covers everything viewer owns outright without a live pty: page rendering,
+layout mutation (`new-column`/`split`/`close`), `panes.patch` forwarding on
+`/sse`. No `--services`, no store needed for a pty since none spawns here:
 
-    http-nu eval --datastar --store /tmp/panes-test --services examples/panes/test.nu
+    http-nu eval --datastar --store /tmp/panes-test examples/panes/test.nu
 
-`test-viewer.nu` proves the host/viewer split instead: it spawns real host
-and viewer server processes (`job spawn`, two stores) and curls the
-viewer's `/sse` to confirm a pane spawned on the host shows up there.
+`test-viewer.nu` proves the host/viewer split for real: it spawns actual
+host and viewer server processes (`job spawn`, two stores, host with
+`--services`) and drives everything through viewer's HTTP port -- host has
+no `/pane/*` or `/input` route to hit directly anymore. It covers phase A
+(a pane host spawns at boot shows up in viewer's `/sse` via the replica) and
+phase B (opening a column and typing through viewer's own routes reaches a
+real pty on host and its echo comes back through the replica).
 
     examples/panes/test-viewer.nu
 

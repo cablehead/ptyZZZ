@@ -1,10 +1,11 @@
 # examples/panes -- shared read side between host.nu and viewer.nu.
 #
-# Frames carry everything the fold needs, so the same fold works whether it
-# reads the local store or a replica: only which store gets threaded through
-# as an optional `core` (the name a `xs.replica.<core>.create` opened). Write
-# helpers (spawn/kill a pane, layout mutation) stay local to whichever file
-# owns that stream -- this module is read-only, on purpose.
+# host writes pty-*.screen, pty-*.diff, xs.service.pty-*.* -- the content a
+# pty produces. viewer writes panes.layout, panes.patch, panes.seq -- the UI
+# state describing where panes live on screen. viewer is the only browser
+# surface (see viewer.nu), so its `/sse` folds an interleave of its own store
+# and a replica of host's; layout is always local, since only viewer ever
+# writes it.
 
 use http-nu/datastar *
 
@@ -21,30 +22,41 @@ export def cas-core [hash: any, core?: string] {
   if $core == null { .cas $hash } else { .cas $hash --core $core }
 }
 
-def cat-core [core?: string, --from: string] {
-  if $core == null { .cat --follow --from $from } else { .cat $core --follow --from $from }
+def cat-local [from?: string] {
+  if $from == null { .cat --follow } else { .cat --follow --from $from }
 }
 
-export def layout [core?: string] {
-  let f = (last-core "panes.layout" $core)
+def cat-from [core: string, from?: string] {
+  if $from == null { .cat $core --follow } else { .cat $core --follow --from $from }
+}
+
+export def layout [] {
+  let f = (.last "panes.layout")
   if $f == null { {columns: []} } else { $f.meta }
 }
 
-# `/sse`: a pure fold over one ordered `.cat --follow`, reading `$core`
-# (null for the local store, a replica name otherwise). See host.nu's git
-# history for the shape of the reasoning; unchanged here except every read
-# ( `.last`, `.cas` ) is core-aware so a viewer folding a replica dereferences
-# keyframes from the replica's own on-demand CAS pull, not the local one.
-export def sse-response [core?: string] {
-  let live = (try { layout $core | get columns | each {|c| $c.panes} | flatten } catch { [] })
-  let seeds = ($live | each {|id| last-core $"pty-($id).screen" $core} | compact)
-  let from = (if ($seeds | is-empty) {
-    (last-core "panes.layout" $core | get id)
-  } else {
-    $seeds | get id | sort | first
-  })
+# viewer's `/sse`: an interleave of its own store (panes.layout/panes.patch,
+# the only things it writes) and `host_core`, a replica of host (pty-*.screen/
+# diff, xs.service.pty-*.* -- the only things host writes). Per-frame handling
+# is unchanged from the single-store version; only the read is now two
+# streams merged instead of one, since content that used to share a journal
+# now lives on either side of the host/viewer split.
+export def sse-response [host_core: string] {
+  let live = (try { layout | get columns | each {|c| $c.panes} | flatten } catch { [] })
+  let seeds = ($live | each {|id| last-core $"pty-($id).screen" $host_core} | compact)
+  # Host side: replay from the oldest live keyframe, same reasoning as
+  # before -- `--from` is inclusive, so every live pane's keyframe is caught.
+  # No live panes yet (a fresh workspace) means nothing to seed; read from
+  # the start of the (empty, so far) replica.
+  let from_host = (if ($seeds | is-empty) { null } else { $seeds | get id | sort | first })
+  # Local side: replay from the current layout snapshot's own id. Every
+  # layout mutation route saves layout *before* emitting its patch, so this
+  # still catches a patch from the same operation that produced the layout
+  # we just read (patch id > layout id); anything older is already reflected
+  # in that snapshot, so no need to replay it again.
+  let from_local = (try { .last "panes.layout" | get id } catch { null })
 
-  cat-core $core --from $from
+  interleave { cat-local $from_local } { cat-from $host_core $from_host }
   | generate {|f, s|
       let parts = ($f.topic | split row ".")
 
@@ -69,8 +81,10 @@ export def sse-response [core?: string] {
 
         if $kind == "screen" {
           # A keyframe is self-contained: adopt its seqno as the new basis.
+          # Screen content always lives on host's side, whichever branch of
+          # the interleave this frame arrived on.
           return {
-            out: [(cas-core $f.hash $core | to datastar-patch-elements)]
+            out: [(cas-core $f.hash $host_core | to datastar-patch-elements)]
             next: ($s | update sent ($s.sent | upsert $id ($f.meta.seqno)))
           }
         }

@@ -11,28 +11,38 @@ const HTTP_NU = process.env.HTTP_NU || "http-nu";
 const OUT = process.env.SHOT_DIR || join(HERE, "shots");
 mkdirSync(OUT, { recursive: true });
 
-const port = 3997;
+const hostPort = 3997;
+const port = 3998; // viewer: the only port with a browser UI
 const base = `http://127.0.0.1:${port}`;
-const store = mkdtempSync(join(tmpdir(), "panes-shot-"));
+const hostStore = mkdtempSync(join(tmpdir(), "panes-shot-host-"));
+const viewerStore = mkdtempSync(join(tmpdir(), "panes-shot-viewer-"));
+const hostSrv = spawn(
+  HTTP_NU,
+  ["--dev", "--services", "--store", hostStore, `127.0.0.1:${hostPort}`, join(HERE, "host.nu")],
+  { cwd: ROOT, stdio: "ignore", env: { ...process.env, PANES_VIEWER_ADDR: viewerStore } },
+);
 const srv = spawn(
   HTTP_NU,
-  ["--dev", "--datastar", "--services", "--store", store, `127.0.0.1:${port}`, join(HERE, "host.nu")],
-  { cwd: ROOT, stdio: "ignore" },
+  ["--dev", "--datastar", "--store", viewerStore, `127.0.0.1:${port}`, join(HERE, "viewer.nu")],
+  { cwd: ROOT, stdio: "ignore", env: { ...process.env, PANES_HOST_ADDR: hostStore } },
 );
 const reap = () => {
+  try { hostSrv.kill("SIGKILL"); } catch {}
   try { srv.kill("SIGKILL"); } catch {}
-  spawnSync("pkill", ["-9", "-f", store]);
+  spawnSync("pkill", ["-9", "-f", hostStore]);
+  spawnSync("pkill", ["-9", "-f", viewerStore]);
 };
 process.on("exit", reap);
 
-async function waitReady() {
+async function waitReady(url) {
   for (let i = 0; i < 80; i++) {
-    try { if ((await fetch(base)).ok) return; } catch {}
+    try { if ((await fetch(url)).ok) return; } catch {}
     await new Promise((r) => setTimeout(r, 100));
   }
-  throw new Error("server did not start");
+  throw new Error(`server did not start: ${url}`);
 }
-await waitReady();
+await waitReady(`http://127.0.0.1:${hostPort}`);
+await waitReady(base);
 
 const launchOpts = { args: ["--no-sandbox", "--disable-dev-shm-usage"] };
 if (process.env.CHROMIUM_PATH) launchOpts.executablePath = process.env.CHROMIUM_PATH;
