@@ -57,7 +57,27 @@ selection rather than pinning to a pane id.
 - `http-nu` on PATH, with `--store`, `--services`, and `--datastar`, built
   against an `xs` that has replica stores (`feat/replica-stores` as of this
   writing -- not yet released, so this means a local build; see that
-  branch's `docs/adr/0008-replica-stores.md` handoff section)
+  branch's `docs/adr/0008-replica-stores.md` handoff section). As of this
+  writing http-nu's `main` needs two small local patches to build and run
+  against that branch (neither is a panes design change, both are the
+  surrounding harness catching up to xs's current API):
+  - `Cargo.toml`'s `cross-stream` dependency pointed at a local `xs`
+    checkout instead of the crates.io release, and `add_read_commands`'s
+    now-removed `ReadMode` argument dropped (`src/engine.rs`), and
+    `store.read()` awaited as async dropped to a plain call
+    (`src/store.rs`) -- xs's read commands were consolidated since
+    http-nu's last `cross-stream` bump.
+  - the replica supervisor (`xs::processor::replica::run`) spawned
+    unconditionally in `Store::init` (`src/store.rs`), not gated behind
+    `services` like actor/service/action -- a viewer needs its replica
+    running without opting into `--services`.
+  - top-level script evaluation (`Engine::parse_closure`, `Engine::eval` in
+    `src/engine.rs`) wrapped in `tokio::task::block_in_place` -- xs's
+    `.last`/`.cat` block synchronously now (`Receiver::blocking_recv`),
+    which panics if called inline on a tokio runtime thread the way
+    http-nu's startup-script eval does today. Per-request route handling
+    already gets its own dedicated thread (`worker::spawn_eval_thread`) and
+    was unaffected; only the once-at-startup eval path needed this.
 
 ## Run
 
