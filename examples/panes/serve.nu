@@ -220,7 +220,10 @@ if ($HTTP_NU.store? | default null) != null {
       if $pane == "" {
         "missing pane" | metadata set { merge {'http.response': {status: 400}} }
       } else {
-        $body + "\n" | .append $"pty-($pane).send" | ignore
+        # ephemeral: a keystroke is read by the duplex service the moment it is
+        # written and never read again, so persisting it only grows the journal
+        # that every new /sse connection replays. These were 78% of it.
+        $body + "\n" | .append $"pty-($pane).send" --ttl ephemeral | ignore
         null | metadata set { merge {'http.response': {status: 204}} }
       }
     })
