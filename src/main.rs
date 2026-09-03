@@ -3,7 +3,12 @@
 //! v1 renders the full scrollback (not just the visible grid) and tracks
 //! damage per row. Each emit is either a keyframe (`screen`: the whole grid as
 //! one div, the join point for new subscribers) or a diff (`diff`: changed
-//! rows, appended rows, trimmed row ids, cursor). Rows are keyed by wezterm's
+//! rows, appended rows, trimmed row ids, cursor). A diff carries `base`, the
+//! seqno it was computed against, so a subscriber can tell whether it follows
+//! the frame it holds: `base == held.seqno` means apply, anything else means
+//! frames were missed. Dropping such a diff is safe -- receiving one proves the
+//! pane is dirty, so a healing keyframe is due within `--keyframe-interval`.
+//! Rows are keyed by wezterm's
 //! stable row index, rendered once into a cache, and re-rendered only when
 //! wezterm reports the line changed; re-rendered rows are byte-compared
 //! against the cache so output that changes nothing visible emits nothing.
@@ -715,7 +720,7 @@ impl EmitState {
                 .collect();
             self.dirty_since_keyframe = true;
             serde_json::json!({
-                "t":"diff","seqno":seqno,"target":self.target,
+                "t":"diff","seqno":seqno,"base":self.last_seqno,"target":self.target,
                 "patch":patch,"append":append,"trim":trim
             })
         };
@@ -1058,4 +1063,87 @@ fn render_row_into(
     }
     close(out, &mut open, &mut run);
     out.push_str("</div>");
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A terminal wired up the way `main` does, minus the pty.
+    fn term(rows: usize, cols: usize) -> Terminal {
+        Terminal::new(
+            TerminalSize { rows, cols, pixel_width: 0, pixel_height: 0, dpi: 0 },
+            Arc::new(MinimalConfig { scrollback: 100 }),
+            "ptyZZZ",
+            "0",
+            Box::new(std::io::sink()),
+        )
+    }
+
+    fn seqno(f: &serde_json::Value) -> u64 {
+        f["seqno"].as_u64().expect("frame carries seqno")
+    }
+
+    /// Every diff names the frame it was computed against, and that name is the
+    /// seqno of the frame immediately before it. This is what lets a subscriber
+    /// detect a gap: seqnos are wezterm damage counters and jump by arbitrary
+    /// amounts, so "did I miss a frame" is not answerable by comparing them.
+    #[test]
+    fn diff_base_chains_to_the_previous_frame() {
+        let mut t = term(24, 80);
+        let mut st = EmitState::new("grid".to_string());
+
+        t.advance_bytes(b"first\r\n");
+        let opening = st.produce(&mut t, false).expect("first output emits a frame");
+        assert_eq!(opening["t"], "screen", "the first frame is a keyframe");
+        let mut held = seqno(&opening);
+
+        // Three more writes, each of which must produce a diff that chains.
+        for line in [&b"second\r\n"[..], &b"third\r\n"[..], &b"fourth\r\n"[..]] {
+            t.advance_bytes(line);
+            let f = st.produce(&mut t, false).expect("output emits a frame");
+            assert_eq!(f["t"], "diff", "steady-state output is a diff");
+            assert_eq!(
+                f["base"].as_u64().expect("diff carries base"),
+                held,
+                "diff.base must equal the seqno of the frame before it"
+            );
+            held = seqno(&f);
+        }
+    }
+
+    /// A keyframe is self-contained, so it carries no base: a subscriber adopts
+    /// its seqno outright rather than checking continuity.
+    #[test]
+    fn keyframe_carries_no_base() {
+        let mut t = term(24, 80);
+        let mut st = EmitState::new("grid".to_string());
+        t.advance_bytes(b"hello\r\n");
+        let f = st.produce(&mut t, false).expect("emits a frame");
+        assert_eq!(f["t"], "screen");
+        assert!(f.get("base").is_none(), "keyframes do not chain");
+    }
+
+    /// A gap is detectable: skipping a produce() leaves the subscriber's held
+    /// seqno stale, and the next diff's base no longer matches it.
+    #[test]
+    fn a_missed_frame_breaks_the_chain() {
+        let mut t = term(24, 80);
+        let mut st = EmitState::new("grid".to_string());
+        t.advance_bytes(b"first\r\n");
+        let held = seqno(&st.produce(&mut t, false).expect("keyframe"));
+
+        // Subscriber misses this one.
+        t.advance_bytes(b"missed\r\n");
+        let _dropped = st.produce(&mut t, false).expect("diff we pretend was lost");
+
+        t.advance_bytes(b"next\r\n");
+        let f = st.produce(&mut t, false).expect("diff");
+        assert_ne!(
+            f["base"].as_u64().expect("diff carries base"),
+            held,
+            "a subscriber holding a stale seqno must see the mismatch"
+        );
+    }
 }
