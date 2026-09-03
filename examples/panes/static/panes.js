@@ -155,7 +155,7 @@ function fit() {
       box.style.flex = "none";
       box.style.height = h;
       // Shrinking the box leaves scrollTop short of the new bottom.
-      if (stick[name] !== false) stickToBottom(name);
+      if (stick[name]) stickToBottom(name);
     }
     const prev = lastFit[name];
     if (!prev || prev.cols !== cols || prev.rows !== rows) {
@@ -182,60 +182,36 @@ function fitNow() {
 // Auto-stick to the bottom, per pane. `stick` means "pinned to the live
 // prompt".
 //
-// The rule is: never infer intent from a `scroll` event. A scroll event cannot
-// say who caused it, so reading one meant reconstructing the answer -- from a
-// mutation window, from a remembered write value -- and every new way to
-// scroll needed another guard on the pile. Listen instead for the gestures
-// that are unambiguously the user, and let `scrollend` say when one is over,
-// momentum included.
+// Every scroll event is either ours or the user's, and the difference is one
+// comparison: does scrollTop still hold the value we put there? Appending rows
+// moves scrollHeight, never scrollTop, so growth cannot blur that answer.
 //
-// While a gesture is live the pin yields completely. A patch arriving mid-drag
-// must not write scrollTop: in the overscroll rubber band that rips the
-// content back out from under the thumb.
-//
-// `hold` is a deadline, not a flag, so it cannot get stuck. A pointerdown that
-// never scrolls expires on its own, and a browser with no `scrollend` (Safari
-// before 26.2) still yields for the gesture and resumes after it, just without
-// the eased settle.
+// An earlier version listened for the gestures instead -- wheel, touchstart, a
+// pointerdown past the scrollbar -- and held the pin off until `scrollend`.
+// The trouble is that a held pane is never re-pinned, so every arriving row
+// moved the bottom away from the user, and "are you at the bottom" asked after
+// the gesture answered about a place that no longer existed. Ask before the
+// content changes and the question stays answerable.
 //
 // The old rule -- keep the cursor visible -- is not the same thing. A TUI that
 // draws rows below its cursor (the Claude Code CLI input box, with its hint
 // line under it) satisfies "cursor in view" while its last rows sit below the
 // fold, so the pane stopped tracking.
 const stick = {};
-// How long a gesture owns the scroll with no `scrollend` to close it. Long
-// enough to cover touch momentum, short enough that a hold left behind on a
-// browser without `scrollend` heals within a frame or two of output.
-const HOLD_MS = 700;
-const hold = {};
-const holdTimer = {};
-function held(name) {
-  return !!hold[name];
+// The scrollTop we last wrote, per pane. Appending rows changes scrollHeight
+// but never scrollTop, so this is the one comparison content growth cannot
+// perturb: if scrollTop still reads what we put there, the user has not
+// touched it. That answers "was that scroll the user or us" outright, which
+// is what the hold, the gesture listeners and the direction tracking were all
+// guessing at.
+const lastWrote = {};
+
+// A deliberate "catch me up" from the follow button.
+function follow(name) {
+  setStick(name, true);
+  toBottom(name);
 }
-function beginHold(name) {
-  hold[name] = 1;
-  clearTimeout(holdTimer[name]);
-  holdTimer[name] = setTimeout(() => resolveHold(name), HOLD_MS);
-}
-// Every hold ends here, whether `scrollend` closed it or the timer did. It has
-// to re-assert rather than just lapse: a hold that only expired would leave a
-// pane that is still stuck sitting wherever the gesture left it, with no frame
-// guaranteed to arrive and put it right.
-function resolveHold(name) {
-  if (!hold[name]) return;
-  hold[name] = 0;
-  clearTimeout(holdTimer[name]);
-  const box = scrollBox(name);
-  if (!box) return;
-  setStick(name, atBottom(box));
-  // Only ease back if the release left live content below the fold. Past
-  // bottomTarget the user is in the grid's blank tail, seeing everything there
-  // is to see, and that is where the browser itself comes to rest -- dragging
-  // them back up two rows from a place they chose is a fight, not a settle.
-  // The next frame re-pins them anyway, so the offset only survives while
-  // nothing is happening, which is exactly when it is worth respecting.
-  if (stick[name] !== false && box.scrollTop < bottomTarget(box)) settleToBottom(name);
-}
+
 function scrollBox(name) {
   return document.querySelector(`.pane[data-pane="${name}"] .scroll`);
 }
@@ -270,24 +246,22 @@ function bottomTarget(box) {
 function atBottom(box) {
   return box.scrollTop >= bottomTarget(box) - 8;
 }
-// Instant on purpose. This runs once per arriving line, and a smooth scroll
-// animates over ~300ms: at 16ms between frames each write would abort the last
-// animation and restart it, so the view would trail the output permanently.
-// Yields to a live gesture -- see `hold`.
+// Re-pin a pane as output arrives. A pane the user scrolled away from is not
+// stuck, so this does nothing to it.
 function stickToBottom(name) {
-  if (held(name)) return;
+  if (stick[name]) toBottom(name);
+}
+// The only writer of scrollTop, and it records what it wrote. Instant, never
+// smooth: a smooth scroll travels through positions nobody wrote, and every
+// one of them would read as the user having moved.
+function toBottom(name) {
   const box = scrollBox(name);
   if (!box) return;
   const top = bottomTarget(box);
   if (box.scrollTop !== top) box.scrollTop = top;
+  lastWrote[name] = top;
 }
-// The one bottom move that is animated: a single hop to a known place, after
-// the user let go or asked to follow again. Same reasoning as `reveal`.
-function settleToBottom(name) {
-  const box = scrollBox(name);
-  if (!box) return;
-  box.scrollTo({top: bottomTarget(box), behavior: "smooth"});
-}
+
 function reveal(id) {
   paneOf(id)?.closest(".column")?.scrollIntoView({
     inline: "center",
@@ -310,7 +284,7 @@ function restick() {
   requestAnimationFrame(() => {
     for (const p of paneEls()) {
       const name = p.dataset.pane;
-      if (stick[name] !== false) stickToBottom(name);
+      if (stick[name]) stickToBottom(name);
     }
     if (!zoom && selected) reveal(selected);
   });
@@ -322,28 +296,14 @@ function wirePane(p) {
   setStick(name, true);
   const box = p.querySelector(".scroll");
   if (!box) return;
-  // Intent in. Only the user produces these, so they need no guard.
-  for (const kind of ["wheel", "touchstart"]) {
-    box.addEventListener(kind, () => beginHold(name), {passive: true});
-  }
-  // A scrollbar grab, not a click in the text: clicking a pane to focus it must
-  // not stop it tracking. The scrollbar sits past clientWidth, so this misses
-  // overlay scrollbars, which take the same path they always did.
-  box.addEventListener("pointerdown", ev => {
-    if (ev.offsetX > box.clientWidth) beginHold(name);
-  }, {passive: true});
-  // A drag longer than HOLD_MS would otherwise expire mid-gesture and let the
-  // pin start fighting the thumb again. This only extends a hold that is
-  // already live; it decides nothing, and it is inert when nothing is held, so
-  // our own writes cannot feed it.
+  // The user moved this pane if, and only if, scrollTop is not where we left
+  // it. Ask where they landed at that moment, before the next row arrives and
+  // moves the bottom out from under the answer.
   box.addEventListener("scroll", () => {
-    if (held(name)) beginHold(name);
+    if (box.scrollTop === lastWrote[name]) return;
+    setStick(name, atBottom(box));
   }, {passive: true});
-  // Intent out. `scrollend` fires for programmatic scrolls too, so it resolves
-  // nothing unless a gesture was holding. Without that check, a frame landing
-  // between our write and the event would read as "scrolled away" and unpin a
-  // pane that is tracking perfectly.
-  box.addEventListener("scrollend", () => resolveHold(name));
+
 }
 function wireAll() {
   paneEls().forEach(wirePane);
@@ -361,12 +321,10 @@ strip.addEventListener("mousedown", e => {
   setSelected(p.dataset.pane, {focus: true});
 });
 strip.addEventListener("click", e => {
-  const follow = e.target.closest(".follow");
-  if (follow) {
-    const name = follow.closest(".pane")?.dataset.pane;
-    // A deliberate "catch me up": clear any hold the click left and ease back,
-    // rather than snapping the pane out from under the click.
-    if (name) { hold[name] = 0; setStick(name, true); settleToBottom(name); }
+  const btn = e.target.closest(".follow");
+  if (btn) {
+    const name = btn.closest(".pane")?.dataset.pane;
+    if (name) follow(name);
     e.stopPropagation();
     return;
   }
@@ -394,7 +352,7 @@ new MutationObserver(muts => {
     if (name) touched.add(name);
   }
   for (const name of touched) {
-    if (stick[name] !== false) stickToBottom(name);
+    if (stick[name]) stickToBottom(name);
   }
 }).observe(document.body, {childList: true, subtree: true, characterData: true});
 
