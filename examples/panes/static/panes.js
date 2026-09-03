@@ -193,18 +193,19 @@ function fitNow() {
 // must not write scrollTop: in the overscroll rubber band that rips the
 // content back out from under the thumb.
 //
-// A hold always resolves, either on `scrollend` or on its own timer, so a
-// browser without `scrollend` (Safari before 26.2) still yields for the
-// gesture and re-pins after it, just without the eased settle.
+// `hold` is a deadline, not a flag, so it cannot get stuck. A pointerdown that
+// never scrolls expires on its own, and a browser with no `scrollend` (Safari
+// before 26.2) still yields for the gesture and resumes after it, just without
+// the eased settle.
 //
 // The old rule -- keep the cursor visible -- is not the same thing. A TUI that
 // draws rows below its cursor (the Claude Code CLI input box, with its hint
 // line under it) satisfies "cursor in view" while its last rows sit below the
 // fold, so the pane stopped tracking.
 const stick = {};
-// How long a gesture owns the scroll when no `scrollend` arrives to close it.
-// Long enough to cover touch momentum, short enough that a hold left behind on
-// a browser without `scrollend` heals well inside a reading pause.
+// How long a gesture owns the scroll with no `scrollend` to close it. Long
+// enough to cover touch momentum, short enough that a hold left behind on a
+// browser without `scrollend` heals within a frame or two of output.
 const HOLD_MS = 700;
 const hold = {};
 const holdTimer = {};
@@ -218,8 +219,8 @@ function beginHold(name) {
 }
 // Every hold ends here, whether `scrollend` closed it or the timer did. It has
 // to re-assert rather than just lapse: a hold that only expired would leave a
-// pane that still believes it is stuck sitting wherever the gesture left it,
-// with no frame guaranteed to arrive and put it right.
+// pane that is still stuck sitting wherever the gesture left it, with no frame
+// guaranteed to arrive and put it right.
 function resolveHold(name) {
   if (!hold[name]) return;
   hold[name] = 0;
@@ -280,8 +281,8 @@ function stickToBottom(name) {
   const top = bottomTarget(box);
   if (box.scrollTop !== top) box.scrollTop = top;
 }
-// The one bottom move that is animated: a single hop to a known place, once the
-// user has let go or asked to follow again. Same reasoning as `reveal`.
+// The one bottom move that is animated: a single hop to a known place, after
+// the user let go or asked to follow again. Same reasoning as `reveal`.
 function settleToBottom(name) {
   const box = scrollBox(name);
   if (!box) return;
@@ -327,7 +328,7 @@ function wirePane(p) {
   }
   // A scrollbar grab, not a click in the text: clicking a pane to focus it must
   // not stop it tracking. The scrollbar sits past clientWidth, so this misses
-  // overlay scrollbars, which keep the behavior they already had.
+  // overlay scrollbars, which take the same path they always did.
   box.addEventListener("pointerdown", ev => {
     if (ev.offsetX > box.clientWidth) beginHold(name);
   }, {passive: true});
@@ -363,8 +364,8 @@ strip.addEventListener("click", e => {
   const follow = e.target.closest(".follow");
   if (follow) {
     const name = follow.closest(".pane")?.dataset.pane;
-    // A deliberate "catch me up": drop any hold the click left and ease back,
-    // rather than snapping the pane out from under the pointer.
+    // A deliberate "catch me up": clear any hold the click left and ease back,
+    // rather than snapping the pane out from under the click.
     if (name) { hold[name] = 0; setStick(name, true); settleToBottom(name); }
     e.stopPropagation();
     return;
@@ -396,6 +397,7 @@ new MutationObserver(muts => {
     if (stick[name] !== false) stickToBottom(name);
   }
 }).observe(document.body, {childList: true, subtree: true, characterData: true});
+
 addEventListener("resize", () => { cellCache = null; scheduleFit(); });
 document.fonts.ready.then(() => { cellCache = null; fit(); });
 
