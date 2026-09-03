@@ -204,18 +204,18 @@ function beginMutating() {
 function scrollBox(name) {
   return document.querySelector(`.pane[data-pane="${name}"] .scroll`);
 }
-function atBottom(box) {
-  return box.scrollHeight - box.scrollTop - box.clientHeight < 8;
+// Single writer for stick, so the pane's class always agrees with it and the
+// follow button can key off one thing.
+function setStick(name, on) {
+  stick[name] = on;
+  paneOf(name)?.classList.toggle("unstuck", on === false);
 }
-// "Bottom" is the last row that carries something, not the end of the scroll
-// range. A resize grows the pty's viewport before the app has drawn into the new
-// rows, so the grid legitimately ends in blank lines; pinning to
-// scrollHeight - clientHeight parks the view in that empty tail with the prompt
-// above the fold. The cursor counts as content, so a TUI that parks it below its
-// last text still keeps it in view.
-function stickToBottom(name) {
-  const box = scrollBox(name);
-  if (!box) return;
+// The scrollTop that puts the live output at the bottom of the view. Not the end
+// of the scroll range: a resize grows the pty's viewport before the app has drawn
+// into the new rows, so the grid legitimately ends in blank lines and the range
+// ends below anything worth looking at. The cursor counts as content, so a TUI
+// that parks it under its last text still keeps it in view.
+function bottomTarget(box) {
   const boxTop = box.getBoundingClientRect().top;
   const bottomOf = el => el.getBoundingClientRect().bottom - boxTop + box.scrollTop;
   let target = 0;
@@ -227,8 +227,27 @@ function stickToBottom(name) {
   const cur = box.querySelector(".cursor");
   if (cur) target = Math.max(target, bottomOf(cur));
   const max = box.scrollHeight - box.clientHeight;
-  const top = target ? Math.max(0, Math.min(Math.ceil(target) - box.clientHeight, max)) : max;
-  if (box.scrollTop !== top) box.scrollTop = top;
+  return target ? Math.max(0, Math.min(Math.ceil(target) - box.clientHeight, max)) : max;
+}
+// Shares bottomTarget with stickToBottom on purpose: if these two disagreed,
+// every re-pin would land somewhere atBottom calls "scrolled away" and unstick
+// the pane it had just pinned.
+function atBottom(box) {
+  return box.scrollTop >= bottomTarget(box) - 8;
+}
+// Remember the position we wrote, so the scroll event it fires can be told apart
+// from a real one by value. The mutating flag is cleared on a setTimeout(0) while
+// scroll events fire in the rendering step, so that guard alone races; this does
+// not.
+const lastWrite = {};
+function stickToBottom(name) {
+  const box = scrollBox(name);
+  if (!box) return;
+  const top = bottomTarget(box);
+  if (box.scrollTop !== top) {
+    box.scrollTop = top;
+    lastWrite[name] = box.scrollTop;
+  }
 }
 function reveal(id) {
   paneOf(id)?.closest(".column")?.scrollIntoView({
@@ -261,10 +280,11 @@ function wirePane(p) {
   const name = p.dataset.pane;
   if (!name || p.dataset.wired) return;
   p.dataset.wired = "1";
-  stick[name] = true;
+  setStick(name, true);
   p.querySelector(".scroll")?.addEventListener("scroll", ev => {
     if (mutating) return;
-    stick[name] = atBottom(ev.currentTarget);
+    if (ev.currentTarget.scrollTop === lastWrite[name]) return;
+    setStick(name, atBottom(ev.currentTarget));
   });
 }
 function wireAll() {
@@ -277,11 +297,19 @@ function wireAll() {
 
 const strip = document.getElementById("strip");
 strip.addEventListener("mousedown", e => {
+  if (e.target.closest(".follow")) return;
   const p = e.target.closest(".pane");
   if (!p) return;
   setSelected(p.dataset.pane, {focus: true});
 });
 strip.addEventListener("click", e => {
+  const follow = e.target.closest(".follow");
+  if (follow) {
+    const name = follow.closest(".pane")?.dataset.pane;
+    if (name) { beginMutating(); setStick(name, true); stickToBottom(name); }
+    e.stopPropagation();
+    return;
+  }
   if (e.target.closest(".pane")) parkFocus();
 });
 document.addEventListener("click", e => {
