@@ -35,7 +35,7 @@ const SVC = '{
         let e = try { $l | from json } catch { null }
         if $e == null { return }
         match $e.t {
-          "screen" => ( $e.html | .append "PFX.screen" --ttl last:1 )
+          "screen" => ( $e.html | .append "PFX.screen" --ttl last:1 --meta {seqno: $e.seqno} )
           "diff"   => ( null | .append "PFX.diff" --ttl ephemeral --meta {body: $l} )
           "exit"   => ( {code: $e.code} | to json | .append "PFX.exit" --ttl last:1 )
           _ => null
@@ -131,26 +131,37 @@ if ($HTTP_NU.store? | default null) != null {
       | metadata set --content-type "text/html"
     })
 
-    # Play the stream from the beginning and materialize the current view.
-    # Liveness folds from the service lifecycle (create/active up, term down), so
-    # a closed pane's keyframe is folded over rather than deleted -- nothing is
-    # removed from the store. Replay emits nothing and reads no CAS: the fold
-    # carries hashes only. xs.threshold marks the end of history, and there the
-    # view goes out once, one keyframe per live pane. After that frames stream
-    # through as they arrive.
+    # One read: start at the oldest retained keyframe and follow from there.
+    # `--from` is inclusive, so every live pane's keyframe is in the replay (each
+    # is at or after the oldest), and everything appended since follows in order.
+    # No snapshot-then-subscribe gap, so nothing needs interleaving.
+    #
+    # Cost is bounded by time since that keyframe, not by store size: `last:1`
+    # keeps one screen frame per pane, and the rest of the history is skipped.
+    #
+    # Diffs are `--ttl ephemeral` and never hit disk, so one appended before this
+    # read started is gone whatever we do. That is what `base` handles: a diff is
+    # forwarded only when it chains to the last frame this connection sent, and a
+    # dropped one is repaired by the healing keyframe -- receiving a diff proves
+    # the pane is dirty, so one is due within ptyZZZ's --keyframe-interval.
     (route {method: "GET", path: "/sse"} {|req ctx|
-      .cat --follow
-      | generate {|f, s = {live: [], screens: {}, past: false}|
+      let live = (try { layout | get columns | each {|c| $c.panes} | flatten } catch { [] })
+      let seeds = ($live | each {|id| .last $"pty-($id).screen"} | compact)
+      # Start at the oldest pane keyframe. With no panes yet there is nothing to
+      # seed, so anchor on the layout frame instead -- ensure-panes writes one at
+      # startup, so this is always present and keeps the read to a single shape.
+      let from = (if ($seeds | is-empty) {
+        (.last "panes.layout" | get id)
+      } else {
+        $seeds | get id | sort | first
+      })
+
+      .cat --follow --from $from
+      | generate {|f, s|
           let parts = ($f.topic | split row ".")
 
-          if $f.topic == "xs.threshold" {
-            let cols = ($s.screens | columns)
-            let patches = ($s.live | each {|id|
-              if ($id in $cols) { .cas ($s.screens | get $id) | to datastar-patch-elements }
-            } | compact)
-            return {out: $patches, next: ($s | update past true)}
-          }
-
+          # Liveness, so a closed pane's frames are not forwarded to a page that
+          # no longer has an element for them.
           if ($f.topic | str starts-with "xs.service.pty-") {
             let id = ($parts | get 2 | str replace "pty-" "")
             let kind = ($parts | get 3)
@@ -158,10 +169,7 @@ if ($HTTP_NU.store? | default null) != null {
               return {next: ($s | update live ($s.live | append $id | uniq))}
             }
             if $kind == "term" {
-              let cols = ($s.screens | columns)
-              return {next: ($s
-                | update live ($s.live | where {|x| $x != $id})
-                | update screens (if ($id in $cols) { $s.screens | reject $id } else { $s.screens }))}
+              return {next: ($s | update live ($s.live | where {|x| $x != $id}))}
             }
             return {next: $s}
           }
@@ -169,34 +177,39 @@ if ($HTTP_NU.store? | default null) != null {
           if ($f.topic | str starts-with "pty-") {
             let id = ($parts | get 0 | str replace "pty-" "")
             let kind = ($parts | get 1)
-            if not $s.past {
-              # Carry the hash, do not read it. Only what survives the fold is
-              # ever fetched, and only once, at the threshold.
-              if $kind == "screen" {
-                return {next: ($s | update screens ($s.screens | upsert $id $f.hash))}
-              }
-              return {next: $s}
-            }
             if not ($id in $s.live) { return {next: $s} }
+
             if $kind == "screen" {
-              return {out: [(.cas $f.hash | to datastar-patch-elements)], next: $s}
+              # A keyframe is self-contained: adopt its seqno as the new basis.
+              return {
+                out: [(.cas $f.hash | to datastar-patch-elements)]
+                next: ($s | update sent ($s.sent | upsert $id ($f.meta.seqno)))
+              }
             }
+
             if $kind == "diff" {
-              let d = $f.meta.body | from json
-              return {out: ([
-                (if ($d.patch | is-not-empty) { $d.patch | to datastar-patch-elements })
-                (if ($d.append | is-not-empty) {
-                  $d.append | to datastar-patch-elements --mode append --selector $"#($d.target)"
-                })
-                (if ($d.trim | is-not-empty) {
-                  "" | to datastar-patch-elements --mode remove --selector ($d.trim | each {|t| $"#($t)"} | str join ",")
-                })
-              ] | compact), next: $s}
+              let d = ($f.meta.body | from json)
+              let held = (if ($id in ($s.sent | columns)) { $s.sent | get $id } else { null })
+              # Only forward a diff that chains to what we last sent. Anything
+              # else means frames were missed; drop it and wait for the heal.
+              if $held == null or $d.base != $held { return {next: $s} }
+              return {
+                out: ([
+                  (if ($d.patch | is-not-empty) { $d.patch | to datastar-patch-elements })
+                  (if ($d.append | is-not-empty) {
+                    $d.append | to datastar-patch-elements --mode append --selector $"#($d.target)"
+                  })
+                  (if ($d.trim | is-not-empty) {
+                    "" | to datastar-patch-elements --mode remove --selector ($d.trim | each {|t| $"#($t)"} | str join ",")
+                  })
+                ] | compact)
+                next: ($s | update sent ($s.sent | upsert $id $d.seqno))
+              }
             }
             return {next: $s}
           }
 
-          if $f.topic == "panes.patch" and $s.past {
+          if $f.topic == "panes.patch" {
             let p = $f.meta
             return {out: [(
               if $p.mode == "remove" {
@@ -208,7 +221,7 @@ if ($HTTP_NU.store? | default null) != null {
           }
 
           {next: $s}
-        }
+        } {live: $live, sent: {}}
       | flatten
       | to sse
       | metadata set --content-type "text/event-stream"

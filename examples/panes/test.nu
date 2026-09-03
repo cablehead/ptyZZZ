@@ -75,4 +75,27 @@ assert ($n2.id | str starts-with "p") "new-column from empty returns a pane id"
 let page5 = (do $c {method: "GET", path: "/", headers: {}, query: {}} | into string)
 assert ($page5 | str contains $"grid-($n2.id)") "empty workspace can open a column"
 
+# /sse forwards a diff only when it chains to the last frame that connection
+# sent. Diffs are normally ephemeral; these are stored so the --from replay
+# delivers them without needing a concurrent writer.
+'<div id="grid-seedpane">BASE</div>' | .append "pty-seedpane.screen" --ttl last:1 --meta {seqno: 100} | ignore
+def fake-diff [seqno: int, base: int, marker: string] {
+  null | .append "pty-seedpane.diff" --meta {body: ({
+    t: "diff", seqno: $seqno, base: $base, target: "grid-seedpane",
+    patch: $'<div class="row" id="grid-seedpane-r-($seqno)">($marker)</div>', append: "", trim: []
+  } | to json -r)} | ignore
+}
+fake-diff 200 100 "GOOD-ONE"
+fake-diff 900 999 "STALE"
+fake-diff 300 200 "GOOD-TWO"
+let lay = (.last "panes.layout" | get meta)
+null | .append "panes.layout" --ttl last:1 --meta {columns: ($lay.columns | append {id: "cseed", panes: ["seedpane"]})} | ignore
+
+# `first` rejects a string stream, so take lines: three sse events are nine.
+let sse = (null | do $c {method: "GET", path: "/sse", headers: {}, query: {}} | lines | first 9 | str join "\n")
+assert ($sse | str contains "BASE") "sse seeds the current keyframe"
+assert ($sse | str contains "GOOD-ONE") "a diff whose base matches is forwarded"
+assert ($sse | str contains "GOOD-TWO") "a diff chaining off the previous diff is forwarded"
+assert (not ($sse | str contains "STALE")) "a diff whose base does not match is dropped"
+
 print "test.nu: all assertions passed"
