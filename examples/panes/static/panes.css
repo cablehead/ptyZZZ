@@ -48,10 +48,13 @@ body.zoom .pane:not(.selected){display:none}
 body.zoom .pane{border-top:0}
 body.zoom .column:not(:has(.pane.selected)){display:none}
 body.zoom .column{flex:1 1 auto;width:auto;min-width:0;max-width:none;border-right:0}
-/* overflow-anchor is the browser default, stated because panes.js depends on
-   it: a pane the user scrolled up is left alone so anchoring holds the line
-   under their eye as rows trim off the top. */
-.scroll{flex:1;overflow-x:hidden;overflow-y:auto;position:relative;min-height:0;overflow-anchor:auto}
+/* Anchoring only helps a pane the user scrolled up, where it holds the line
+   under their eye as rows trim off the top. While pinned it fights us: trimming
+   moves scrollTop to keep content stable, that lands outside the mutating
+   window, and the scroll handler reads the browser's own adjustment as a user
+   scroll and unpins. A pinned pane is driven entirely by stickToBottom, so it
+   wants no anchoring at all. */
+.scroll{flex:1;overflow-x:hidden;overflow-y:auto;position:relative;min-height:0;overflow-anchor:none}
 /* Horizontal inset only. Vertical padding sits inside the scroll content, so
    a pane pinned to the bottom would start mid-row at the top. */
 .scroll>[id^="grid-"]{white-space:pre;padding:0 8px;position:relative;box-sizing:border-box;
@@ -59,6 +62,7 @@ body.zoom .column{flex:1 1 auto;width:auto;min-width:0;max-width:none;border-rig
 .row{height:var(--cell-h)}
 .cell-probe{position:absolute;top:-9999px;left:-9999px;visibility:hidden;white-space:pre;
   font-family:var(--term-font);font-size:14px;line-height:var(--cell-h)}
+.pane.unstuck .scroll{overflow-anchor:auto}
 .pane a{color:inherit;text-decoration:underline}
 
 .cursor{position:absolute;top:calc(var(--cursor-row)*var(--cell-h));left:calc(8px + var(--cursor-col)*1ch);
