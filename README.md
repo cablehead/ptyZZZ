@@ -50,11 +50,11 @@ printf '{"t":"input","b":"ls\\n"}\n' | ptyZZZ run -- nu
 
 That types `ls` into a fresh `nu` and prints screen frames until stdin closes.
 
-The browser view needs [http-nu](https://github.com/cablehead/http-nu), a `nu`
-on PATH, and a source build (`serve.nu` spawns the repo-local binary):
+The browser view needs [http-nu](https://github.com/cablehead/http-nu) and a
+`nu` on PATH. `serve.nu` spawns `target/release/ptyZZZ` if you have a source
+build, otherwise `ptyZZZ` on PATH:
 
 ```bash
-cargo build --release
 http-nu --dev --datastar --services --store ./store 127.0.0.1:5111 serve.nu
 ```
 
@@ -62,7 +62,8 @@ Open http://127.0.0.1:5111 and type into the page.
 
 The bigger demo is [examples/cube](examples/cube): six live terminals on a
 spinning CSS cube, all on one SSE connection. The front face is an interactive
-shell.
+shell. [examples/panes](examples/panes) is a niri-style multiplexer: open,
+split, and close panes at runtime.
 
 ## Why the emulator lives on the server
 

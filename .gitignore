@@ -1,7 +1,9 @@
 /target
 /store
+node_modules
 /server.log
 /datastar-docs.md
 /localhost.pem
 /.claude/worktrees/
 /.claude/settings.local.json
+/panes-store

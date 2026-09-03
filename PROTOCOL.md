@@ -22,7 +22,7 @@ escape hatch (and carries IME-composed text).
 ## stdout (events <- pty), one JSON object per line
 
     {"t":"screen","seqno":N,"cols":C,"rows":R,"html":"<div id=\"grid\"...>"}
-    {"t":"diff","seqno":N,"target":"grid","patch":"...","append":"...","trim":["grid-r-0"]}
+    {"t":"diff","seqno":N,"base":P,"target":"grid","patch":"...","append":"...","trim":["grid-r-0"]}
     {"t":"exit","code":N}
 
 `screen` is a keyframe: the full scrollback plus visible grid (`--scrollback`
@@ -34,6 +34,14 @@ resize, on an alt-screen flip, when a burst changes more than half the rows,
 and as a healing checkpoint every `--keyframe-interval` seconds (default 5)
 while diffs are flowing. The adapter stores the latest keyframe (`ttl last:1`)
 as the join point for new subscribers.
+
+`base` is the seqno the diff was computed against. A subscriber holding a frame
+with seqno `S` applies a diff only when `base == S`, then advances to `seqno`.
+Any other `base` means frames were missed in between: drop the diff and wait.
+That wait is bounded, because a diff only exists if the pane is dirty, so a
+healing keyframe is due within `--keyframe-interval`. Without `base`, a gap is
+undetectable -- seqnos are wezterm damage counters and advance by arbitrary
+amounts, so consecutive frames are not consecutive numbers.
 
 `diff` carries only what changed since the previous frame:
 

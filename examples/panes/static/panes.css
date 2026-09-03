@@ -1,0 +1,87 @@
+@font-face{font-family:"JetBrainsMonoNerd";font-weight:normal;font-style:normal;font-display:swap;
+  src:url("/fonts/JetBrainsMonoNLNerdFontMono-Regular.woff2") format("woff2")}
+@font-face{font-family:"JetBrainsMonoNerd";font-weight:bold;font-style:normal;font-display:swap;
+  src:url("/fonts/JetBrainsMonoNLNerdFontMono-Bold.woff2") format("woff2")}
+
+:root{--term-font:"JetBrainsMonoNerd",monospace;--term-bg:#111;--term-fg:#ddd;
+  --chrome:#1a1a1a;--dim:#888;--sel:#6cf;--sel-blur:#234;--border:#444;--status-h:22px;
+  /* Integer row height: a fractional (em-based) line-height leaves a sub-pixel
+     sliver clipped at the top once a pane is scrolled to the bottom. */
+  --cell-h:17px;
+  --c0:#000;--c1:#cd0000;--c2:#00cd00;--c3:#cdcd00;--c4:#1e90ff;--c5:#cd00cd;
+  --c6:#00cdcd;--c7:#e5e5e5;--c8:#4d4d4d;--c9:#ff5454;--c10:#54ff54;--c11:#ffff54;
+  --c12:#5454ff;--c13:#ff54ff;--c14:#54ffff;--c15:#fff;}
+
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:#000;color:var(--term-fg);font:14px/1.2 var(--term-font);overflow:hidden;
+  display:flex;flex-direction:column}
+
+#strip{flex:1;min-height:0;display:flex;flex-direction:row;overflow-x:auto;overflow-y:hidden;
+  align-items:stretch;gap:0}
+.column{flex:0 0 100ch;width:100ch;min-width:100ch;max-width:100ch;
+  display:flex;flex-direction:column;min-height:0;border-right:1px solid var(--border)}
+.pane{flex:1;display:flex;flex-direction:column;background:var(--term-bg);min-width:0;min-height:0}
+.pane + .pane{border-top:1px solid var(--border)}
+.pane.selected{outline:1px solid var(--sel-blur);outline-offset:-1px}
+body.mode-focus .pane.selected{outline-color:var(--sel)}
+.pane.selected .label{color:#fff;background:#333}
+.label{flex:none;font-size:11px;color:var(--dim);background:var(--chrome);padding:2px 8px}
+
+/* Zoom: the selected pane fills the strip. Siblings and the other columns are
+   hidden in place rather than moved, so SSE patches keep landing on the same
+   nodes and the grids keep streaming behind the zoom. */
+body.zoom .pane:not(.selected){display:none}
+body.zoom .pane{border-top:0}
+body.zoom .column:not(:has(.pane.selected)){display:none}
+body.zoom .column{flex:1 1 auto;width:auto;min-width:0;max-width:none;border-right:0}
+body.zoom .pane.selected .label::after{content:" [zoom]"}
+/* overflow-anchor is the browser default, stated because panes.js depends on
+   it: a pane the user scrolled up is left alone so anchoring holds the line
+   under their eye as rows trim off the top. */
+.scroll{flex:1;overflow-x:hidden;overflow-y:auto;position:relative;min-height:0;overflow-anchor:auto}
+/* Horizontal inset only. Vertical padding sits inside the scroll content, so
+   a pane pinned to the bottom would start mid-row at the top. */
+.scroll>[id^="grid-"]{white-space:pre;padding:0 8px;position:relative;box-sizing:border-box;
+  font-size:14px;line-height:var(--cell-h)}
+.row{height:var(--cell-h)}
+.cell-probe{position:absolute;top:-9999px;left:-9999px;visibility:hidden;white-space:pre;
+  font-family:var(--term-font);font-size:14px;line-height:var(--cell-h)}
+.pane a{color:inherit;text-decoration:underline}
+
+.cursor{position:absolute;top:calc(var(--cursor-row)*var(--cell-h));left:calc(8px + var(--cursor-col)*1ch);
+  width:1ch;height:var(--cell-h);pointer-events:none;box-shadow:inset 0 0 0 1px var(--term-fg)}
+body.mode-focus .pane.selected .cursor{background:var(--term-fg);box-shadow:none;mix-blend-mode:difference;
+  animation:cursor-blink 1s steps(2) infinite}
+@keyframes cursor-blink{50%{opacity:0.4}}
+.wc{display:inline-block;width:calc(var(--w)*1ch)}
+.sb{font-weight:bold}.si{font-style:italic}.su{text-decoration:underline}
+.sx{visibility:hidden}.ss{text-decoration:line-through}
+.f1{color:var(--c1)}.f2{color:var(--c2)}.f3{color:var(--c3)}.f4{color:var(--c4)}
+.f5{color:var(--c5)}.f6{color:var(--c6)}.f7{color:var(--c7)}
+.b1{background:var(--c1)}.b2{background:var(--c2)}.b3{background:var(--c3)}.b4{background:var(--c4)}
+.b5{background:var(--c5)}.b6{background:var(--c6)}.b7{background:var(--c7)}
+
+#empty{position:absolute;inset:0 0 var(--status-h) 0;display:flex;align-items:center;justify-content:center;
+  color:var(--dim);pointer-events:none}
+#empty[hidden]{display:none}
+
+#status{flex:none;height:var(--status-h);display:flex;align-items:center;justify-content:space-between;
+  padding:0 8px;background:var(--chrome);border-top:1px solid var(--border);font-size:11px;color:var(--dim)}
+#mode-badge{background:none;border:0;color:inherit;font:inherit;cursor:pointer;text-transform:uppercase;
+  letter-spacing:0.04em;padding:0}
+body.mode-focus #mode-badge{color:var(--sel)}
+#status .hint{letter-spacing:0.04em}
+
+.actions-backdrop{position:fixed;inset:0;z-index:1000;display:flex;align-items:flex-end;justify-content:flex-end;
+  padding:0 8px var(--status-h) 0}
+.actions-backdrop[hidden]{display:none}
+.actions-panel{min-width:13rem;background:var(--chrome);border:1px solid var(--border);border-bottom:0;
+  border-radius:5px 5px 0 0;box-shadow:0 -10px 28px rgba(0,0,0,0.55);overflow:hidden}
+.picker-heading{padding:0.3rem 0.75rem;font-size:11px;letter-spacing:0.04em;text-transform:uppercase;
+  color:var(--dim);border-bottom:1px solid var(--border)}
+.picker-row{display:flex;align-items:center;justify-content:space-between;width:100%;text-align:left;
+  background:transparent;color:var(--term-fg);border:0;padding:0.4rem 0.75rem;font:inherit;cursor:pointer}
+.picker-row:hover,.picker-row.sel{background:var(--sel-blur)}
+.row-keys{color:var(--dim);display:flex;gap:0.25ch}
+kbd{font:inherit;border:1px solid var(--border);border-radius:2px;padding:0 0.35ch;font-size:11px}

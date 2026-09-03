@@ -3,7 +3,12 @@
 //! v1 renders the full scrollback (not just the visible grid) and tracks
 //! damage per row. Each emit is either a keyframe (`screen`: the whole grid as
 //! one div, the join point for new subscribers) or a diff (`diff`: changed
-//! rows, appended rows, trimmed row ids, cursor). Rows are keyed by a stable
+//! rows, appended rows, trimmed row ids, cursor). A diff carries `base`, the
+//! seqno it was computed against, so a subscriber can tell whether it follows
+//! the frame it holds: `base == held.seqno` means apply, anything else means
+//! frames were missed. Dropping such a diff is safe -- receiving one proves the
+//! pane is dirty, so a healing keyframe is due within `--keyframe-interval`.
+//! Rows are keyed by a stable
 //! row id derived from rio's grid (lines evicted off the scrollback ring plus
 //! physical index), rendered once into a cache, and re-rendered only when
 //! rio's viewport damage covers the line; re-rendered rows are byte-compared
@@ -46,7 +51,7 @@ type Term = Crosswords<PtyProxy>;
 const ENGINE: &str = "rio-vt";
 
 #[derive(Parser)]
-#[command(about = "own one pty, speak JSONL on stdio")]
+#[command(version, about = "own one pty, speak JSONL on stdio")]
 struct Args {
     #[command(subcommand)]
     sub: Sub,
@@ -591,11 +596,16 @@ fn main() {
                 if *g != last_gen || done.load(Ordering::SeqCst) {
                     break;
                 }
-                let due_in = if state.dirty_since_keyframe {
+                let keyframe_in = if state.dirty_since_keyframe {
                     keyframe_interval.saturating_sub(state.last_keyframe.elapsed())
                 } else {
                     Duration::from_secs(3600)
                 };
+                let due_in = keyframe_in.min(
+                    state
+                        .cursor_hide_due_in()
+                        .unwrap_or(Duration::from_secs(3600)),
+                );
                 if due_in.is_zero() {
                     break;
                 }
@@ -649,6 +659,11 @@ fn bump(dirty: &Arc<(Mutex<u64>, Condvar)>) {
 
 // --- frame production --------------------------------------------------------
 
+/// How long the cursor must stay DECTCEM-hidden before the client is told.
+/// Long enough to swallow a repaint's hide/show pair (TUIs cycle those about
+/// ten times a second), short enough that a real hide reads as immediate.
+const CURSOR_HIDE_GRACE: Duration = Duration::from_millis(120);
+
 struct EmitState {
     target: String,
     /// rendered row html by stable row id; the keyframe is the ordered
@@ -657,12 +672,19 @@ struct EmitState {
     /// monotonic frame counter; rio has no terminal seqno, so this stands in
     /// for the protocol's `seqno` field
     seq: u64,
+    /// seqno of the last frame handed out; diffs name it as their `base`.
+    last_seqno: u64,
     last_base: StableRow,
     last_max: StableRow,
     last_cols: usize,
     last_rows: usize,
     last_alt: bool,
-    last_cursor: (usize, usize, bool),
+    /// cursor state the client currently has: position plus visibility. Only
+    /// ever advanced from a sample taken while the cursor was visible.
+    shown_cursor: (usize, usize, bool),
+    /// when the terminal's cursor first went DECTCEM-hidden, cleared the
+    /// moment it comes back. Drives the hide grace below.
+    hidden_since: Option<Instant>,
     sent_initial: bool,
     last_keyframe: Instant,
     dirty_since_keyframe: bool,
@@ -674,16 +696,29 @@ impl EmitState {
             target,
             cache: BTreeMap::new(),
             seq: 0,
+            last_seqno: 0,
             last_base: 0,
             last_max: 0,
             last_cols: 0,
             last_rows: 0,
             last_alt: false,
-            last_cursor: (usize::MAX, usize::MAX, true),
+            shown_cursor: (usize::MAX, usize::MAX, true),
+            hidden_since: None,
             sent_initial: false,
             last_keyframe: Instant::now(),
             dirty_since_keyframe: false,
         }
+    }
+
+    /// Time until a pending hide is owed to the client, if one is pending. The
+    /// emitter waits on this: a grace can expire with no further damage to wake
+    /// it (an app hides the cursor, finishes its repaint, then sits idle).
+    fn cursor_hide_due_in(&self) -> Option<Duration> {
+        let since = self.hidden_since?;
+        if !self.shown_cursor.2 {
+            return None; // already hidden on the client
+        }
+        Some(CURSOR_HIDE_GRACE.saturating_sub(since.elapsed()))
     }
 
     /// Inspect the terminal, update the row cache, and produce the next frame:
@@ -699,11 +734,37 @@ impl EmitState {
         let base: StableRow = term.lines_evicted();
         let max = base + total as StableRow;
         let cursor = term.cursor();
-        let cursor_now = (
+        // DECTCEM off means "this position is scratch". A TUI hides the cursor,
+        // repaints (leaving it wherever the repaint ended -- a spinner row,
+        // column 0), then parks it and shows it again. Sampling every 16ms
+        // catches both halves, so adopting a hidden sample strobed the overlay
+        // between the repaint row and the prompt. Two rules follow:
+        //
+        //   - a hidden sample never moves the cursor. Its coordinates are only
+        //     ever a repaint artifact.
+        //   - a hide reaches the client only if it outlives CURSOR_HIDE_GRACE.
+        //     A repaint's hide/show pair is milliseconds; an app that turns the
+        //     cursor off and leaves it off crosses the grace and goes dark.
+        let now = Instant::now();
+        let raw = (
             history + cursor.pos.row.0.max(0) as usize,
             cursor.pos.col.0,
             term.mode().contains(Mode::SHOW_CURSOR),
         );
+        if raw.2 {
+            self.hidden_since = None;
+        } else if self.hidden_since.is_none() {
+            self.hidden_since = Some(now);
+        }
+        let cursor_now = if raw.2 || !self.sent_initial {
+            // The first frame has no shown position to hold, so it takes the
+            // sample as-is however the app left it.
+            raw
+        } else if now.duration_since(self.hidden_since.unwrap()) >= CURSOR_HIDE_GRACE {
+            (self.shown_cursor.0, self.shown_cursor.1, false)
+        } else {
+            self.shown_cursor
+        };
 
         // Consume rio's damage (viewport-only, consume-and-reset).
         let mut damage_full = false;
@@ -761,7 +822,7 @@ impl EmitState {
             (self.last_base..base.min(self.last_max)).collect()
         };
 
-        let cursor_moved = cursor_now != self.last_cursor;
+        let cursor_moved = cursor_now != self.shown_cursor;
         if !forced
             && !keyframe_due
             && damaged.is_empty()
@@ -858,7 +919,7 @@ impl EmitState {
                 .collect();
             self.dirty_since_keyframe = true;
             serde_json::json!({
-                "t":"diff","seqno":seqno,"target":self.target,
+                "t":"diff","seqno":seqno,"base":self.last_seqno,"target":self.target,
                 "patch":patch,"append":append,"trim":trim
             })
         };
@@ -868,7 +929,8 @@ impl EmitState {
         self.last_cols = cols;
         self.last_rows = rows;
         self.last_alt = alt;
-        self.last_cursor = cursor_now;
+        self.shown_cursor = cursor_now;
+        self.last_seqno = seqno;
         self.sent_initial = true;
         Some(frame)
     }
@@ -1141,8 +1203,8 @@ fn scan_logical_line(
 
 /// The cursor is its own self-identified overlay, positioned purely by CSS
 /// vars, so a cursor move patches ~90 bytes instead of touching any row.
-/// DECTCEM hidden (TUIs hide the cursor while repainting) renders as
-/// display:none so the overlay does not flash around the grid.
+/// DECTCEM hidden renders as display:none. Whether a hide is real, and which
+/// position survives it, is decided in `produce` -- see CURSOR_HIDE_GRACE.
 fn render_cursor_into(out: &mut String, target: &str, row: usize, col: usize, visible: bool) {
     let display = if visible { "" } else { ";display:none" };
     let _ = write!(
@@ -1463,4 +1525,94 @@ fn render_row_into(
         out.push_str(tag);
     }
     out.push_str("</div>");
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A terminal wired up the way `main` does, minus the pty: query replies
+    /// go to a sink.
+    fn term(rows: usize, cols: usize) -> Term {
+        Crosswords::new(
+            CrosswordsSize::new(cols, rows),
+            CursorShape::Block,
+            PtyProxy(Arc::new(Mutex::new(Box::new(std::io::sink())))),
+            WindowId::from(0),
+            0,
+            100,
+        )
+    }
+
+    fn feed(t: &mut Term, bytes: &[u8]) {
+        Processor::default().advance(t, bytes);
+    }
+
+    fn seqno(f: &serde_json::Value) -> u64 {
+        f["seqno"].as_u64().expect("frame carries seqno")
+    }
+
+    /// Every diff names the frame it was computed against, and that name is the
+    /// seqno of the frame immediately before it. This is what lets a subscriber
+    /// detect a gap: seqnos count produce() calls, including the idle ones
+    /// that emit nothing, so "did I miss a frame" is not answerable by
+    /// comparing them.
+    #[test]
+    fn diff_base_chains_to_the_previous_frame() {
+        let mut t = term(24, 80);
+        let mut st = EmitState::new("grid".to_string());
+
+        feed(&mut t, b"first\r\n");
+        let opening = st.produce(&mut t, false).expect("first output emits a frame");
+        assert_eq!(opening["t"], "screen", "the first frame is a keyframe");
+        let mut held = seqno(&opening);
+
+        // Three more writes, each of which must produce a diff that chains.
+        for line in [&b"second\r\n"[..], &b"third\r\n"[..], &b"fourth\r\n"[..]] {
+            feed(&mut t, line);
+            let f = st.produce(&mut t, false).expect("output emits a frame");
+            assert_eq!(f["t"], "diff", "steady-state output is a diff");
+            assert_eq!(
+                f["base"].as_u64().expect("diff carries base"),
+                held,
+                "diff.base must equal the seqno of the frame before it"
+            );
+            held = seqno(&f);
+        }
+    }
+
+    /// A keyframe is self-contained, so it carries no base: a subscriber adopts
+    /// its seqno outright rather than checking continuity.
+    #[test]
+    fn keyframe_carries_no_base() {
+        let mut t = term(24, 80);
+        let mut st = EmitState::new("grid".to_string());
+        feed(&mut t, b"hello\r\n");
+        let f = st.produce(&mut t, false).expect("emits a frame");
+        assert_eq!(f["t"], "screen");
+        assert!(f.get("base").is_none(), "keyframes do not chain");
+    }
+
+    /// A gap is detectable: skipping a produce() leaves the subscriber's held
+    /// seqno stale, and the next diff's base no longer matches it.
+    #[test]
+    fn a_missed_frame_breaks_the_chain() {
+        let mut t = term(24, 80);
+        let mut st = EmitState::new("grid".to_string());
+        feed(&mut t, b"first\r\n");
+        let held = seqno(&st.produce(&mut t, false).expect("keyframe"));
+
+        // Subscriber misses this one.
+        feed(&mut t, b"missed\r\n");
+        let _dropped = st.produce(&mut t, false).expect("diff we pretend was lost");
+
+        feed(&mut t, b"next\r\n");
+        let f = st.produce(&mut t, false).expect("diff");
+        assert_ne!(
+            f["base"].as_u64().expect("diff carries base"),
+            held,
+            "a subscriber holding a stale seqno must see the mismatch"
+        );
+    }
 }
