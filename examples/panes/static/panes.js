@@ -227,7 +227,13 @@ function resolveHold(name) {
   const box = scrollBox(name);
   if (!box) return;
   setStick(name, atBottom(box));
-  if (stick[name] !== false) settleToBottom(name);
+  // Only ease back if the release left live content below the fold. Past
+  // bottomTarget the user is in the grid's blank tail, seeing everything there
+  // is to see, and that is where the browser itself comes to rest -- dragging
+  // them back up two rows from a place they chose is a fight, not a settle.
+  // The next frame re-pins them anyway, so the offset only survives while
+  // nothing is happening, which is exactly when it is worth respecting.
+  if (stick[name] !== false && box.scrollTop < bottomTarget(box)) settleToBottom(name);
 }
 function scrollBox(name) {
   return document.querySelector(`.pane[data-pane="${name}"] .scroll`);
