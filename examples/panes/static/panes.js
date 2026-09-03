@@ -213,6 +213,12 @@ function atBottom(box) {
 // scrollHeight - clientHeight parks the view in that empty tail with the prompt
 // above the fold. The cursor counts as content, so a TUI that parks it below its
 // last text still keeps it in view.
+// Single writer for stick, so the pane's class always agrees with it and the
+// follow button can key off one thing.
+function setStick(name, on) {
+  stick[name] = on;
+  paneOf(name)?.classList.toggle("unstuck", on === false);
+}
 function stickToBottom(name) {
   const box = scrollBox(name);
   if (!box) return;
@@ -261,10 +267,10 @@ function wirePane(p) {
   const name = p.dataset.pane;
   if (!name || p.dataset.wired) return;
   p.dataset.wired = "1";
-  stick[name] = true;
+  setStick(name, true);
   p.querySelector(".scroll")?.addEventListener("scroll", ev => {
     if (mutating) return;
-    stick[name] = atBottom(ev.currentTarget);
+    setStick(name, atBottom(ev.currentTarget));
   });
 }
 function wireAll() {
@@ -277,11 +283,19 @@ function wireAll() {
 
 const strip = document.getElementById("strip");
 strip.addEventListener("mousedown", e => {
+  if (e.target.closest(".follow")) return;
   const p = e.target.closest(".pane");
   if (!p) return;
   setSelected(p.dataset.pane, {focus: true});
 });
 strip.addEventListener("click", e => {
+  const follow = e.target.closest(".follow");
+  if (follow) {
+    const name = follow.closest(".pane")?.dataset.pane;
+    if (name) { beginMutating(); setStick(name, true); stickToBottom(name); }
+    e.stopPropagation();
+    return;
+  }
   if (e.target.closest(".pane")) parkFocus();
 });
 document.addEventListener("click", e => {
