@@ -180,26 +180,54 @@ function fitNow() {
 }
 
 // Auto-stick to the bottom, per pane. `stick` means "pinned to the live
-// prompt". It must flip only on a genuine user scroll, and the trap is that
-// rebuilding a grid also fires scroll events: a morph clamping scrollTop, and
-// our own stick write, both look like scrolls. Reading those as user intent is
-// what unpinned a pane mid-stream. The `mutating` window swallows every scroll
-// event a patch triggers, so stick survives rebuilds.
+// prompt".
+//
+// The rule is: never infer intent from a `scroll` event. A scroll event cannot
+// say who caused it, so reading one meant reconstructing the answer -- from a
+// mutation window, from a remembered write value -- and every new way to
+// scroll needed another guard on the pile. Listen instead for the gestures
+// that are unambiguously the user, and let `scrollend` say when one is over,
+// momentum included.
+//
+// While a gesture is live the pin yields completely. A patch arriving mid-drag
+// must not write scrollTop: in the overscroll rubber band that rips the
+// content back out from under the thumb.
+//
+// A hold always resolves, either on `scrollend` or on its own timer, so a
+// browser without `scrollend` (Safari before 26.2) still yields for the
+// gesture and re-pins after it, just without the eased settle.
 //
 // The old rule -- keep the cursor visible -- is not the same thing. A TUI that
 // draws rows below its cursor (the Claude Code CLI input box, with its hint
 // line under it) satisfies "cursor in view" while its last rows sit below the
 // fold, so the pane stopped tracking.
 const stick = {};
-let mutating = false;
-let mutatingClear = null;
-function beginMutating() {
-  mutating = true;
-  clearTimeout(mutatingClear);
-  // Clear on the next task. A mutation's scroll events fire in the rendering
-  // step before then, so they land inside the window; a later user scroll does
-  // not.
-  mutatingClear = setTimeout(() => { mutating = false; }, 0);
+// How long a gesture owns the scroll when no `scrollend` arrives to close it.
+// Long enough to cover touch momentum, short enough that a hold left behind on
+// a browser without `scrollend` heals well inside a reading pause.
+const HOLD_MS = 700;
+const hold = {};
+const holdTimer = {};
+function held(name) {
+  return !!hold[name];
+}
+function beginHold(name) {
+  hold[name] = 1;
+  clearTimeout(holdTimer[name]);
+  holdTimer[name] = setTimeout(() => resolveHold(name), HOLD_MS);
+}
+// Every hold ends here, whether `scrollend` closed it or the timer did. It has
+// to re-assert rather than just lapse: a hold that only expired would leave a
+// pane that still believes it is stuck sitting wherever the gesture left it,
+// with no frame guaranteed to arrive and put it right.
+function resolveHold(name) {
+  if (!hold[name]) return;
+  hold[name] = 0;
+  clearTimeout(holdTimer[name]);
+  const box = scrollBox(name);
+  if (!box) return;
+  setStick(name, atBottom(box));
+  if (stick[name] !== false) settleToBottom(name);
 }
 function scrollBox(name) {
   return document.querySelector(`.pane[data-pane="${name}"] .scroll`);
@@ -235,19 +263,23 @@ function bottomTarget(box) {
 function atBottom(box) {
   return box.scrollTop >= bottomTarget(box) - 8;
 }
-// Remember the position we wrote, so the scroll event it fires can be told apart
-// from a real one by value. The mutating flag is cleared on a setTimeout(0) while
-// scroll events fire in the rendering step, so that guard alone races; this does
-// not.
-const lastWrite = {};
+// Instant on purpose. This runs once per arriving line, and a smooth scroll
+// animates over ~300ms: at 16ms between frames each write would abort the last
+// animation and restart it, so the view would trail the output permanently.
+// Yields to a live gesture -- see `hold`.
 function stickToBottom(name) {
+  if (held(name)) return;
   const box = scrollBox(name);
   if (!box) return;
   const top = bottomTarget(box);
-  if (box.scrollTop !== top) {
-    box.scrollTop = top;
-    lastWrite[name] = box.scrollTop;
-  }
+  if (box.scrollTop !== top) box.scrollTop = top;
+}
+// The one bottom move that is animated: a single hop to a known place, once the
+// user has let go or asked to follow again. Same reasoning as `reveal`.
+function settleToBottom(name) {
+  const box = scrollBox(name);
+  if (!box) return;
+  box.scrollTo({top: bottomTarget(box), behavior: "smooth"});
 }
 function reveal(id) {
   paneOf(id)?.closest(".column")?.scrollIntoView({
@@ -281,11 +313,30 @@ function wirePane(p) {
   if (!name || p.dataset.wired) return;
   p.dataset.wired = "1";
   setStick(name, true);
-  p.querySelector(".scroll")?.addEventListener("scroll", ev => {
-    if (mutating) return;
-    if (ev.currentTarget.scrollTop === lastWrite[name]) return;
-    setStick(name, atBottom(ev.currentTarget));
-  });
+  const box = p.querySelector(".scroll");
+  if (!box) return;
+  // Intent in. Only the user produces these, so they need no guard.
+  for (const kind of ["wheel", "touchstart"]) {
+    box.addEventListener(kind, () => beginHold(name), {passive: true});
+  }
+  // A scrollbar grab, not a click in the text: clicking a pane to focus it must
+  // not stop it tracking. The scrollbar sits past clientWidth, so this misses
+  // overlay scrollbars, which keep the behavior they already had.
+  box.addEventListener("pointerdown", ev => {
+    if (ev.offsetX > box.clientWidth) beginHold(name);
+  }, {passive: true});
+  // A drag longer than HOLD_MS would otherwise expire mid-gesture and let the
+  // pin start fighting the thumb again. This only extends a hold that is
+  // already live; it decides nothing, and it is inert when nothing is held, so
+  // our own writes cannot feed it.
+  box.addEventListener("scroll", () => {
+    if (held(name)) beginHold(name);
+  }, {passive: true});
+  // Intent out. `scrollend` fires for programmatic scrolls too, so it resolves
+  // nothing unless a gesture was holding. Without that check, a frame landing
+  // between our write and the event would read as "scrolled away" and unpin a
+  // pane that is tracking perfectly.
+  box.addEventListener("scrollend", () => resolveHold(name));
 }
 function wireAll() {
   paneEls().forEach(wirePane);
@@ -306,7 +357,9 @@ strip.addEventListener("click", e => {
   const follow = e.target.closest(".follow");
   if (follow) {
     const name = follow.closest(".pane")?.dataset.pane;
-    if (name) { beginMutating(); setStick(name, true); stickToBottom(name); }
+    // A deliberate "catch me up": drop any hold the click left and ease back,
+    // rather than snapping the pane out from under the pointer.
+    if (name) { hold[name] = 0; setStick(name, true); settleToBottom(name); }
     e.stopPropagation();
     return;
   }
@@ -326,7 +379,6 @@ document.getElementById("mode-badge").addEventListener("click", () => {
 // a patch in synchronously, so one observer batch is one server frame; the
 // panes it touched are the ones to re-pin.
 new MutationObserver(muts => {
-  beginMutating();
   wireAll();
   const touched = new Set();
   for (const m of muts) {
