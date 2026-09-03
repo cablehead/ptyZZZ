@@ -100,6 +100,7 @@ export def sse-response [hosts: list<string>] {
       if ($f.topic | str starts-with "pty-") {
         let id = ($parts | get 0 | str replace "pty-" "")
         let kind = ($parts | get 1)
+        let held = (if ($id in ($s.sent | columns)) { $s.sent | get $id } else { null })
         if not ($id in $s.live) { return {next: $s} }
 
         if $kind == "screen" {
@@ -112,7 +113,6 @@ export def sse-response [hosts: list<string>] {
 
         if $kind == "diff" {
           let d = ($f.meta.body | from json)
-          let held = (if ($id in ($s.sent | columns)) { $s.sent | get $id } else { null })
           # Only forward a diff that chains to what we last sent. Anything
           # else means frames were missed; drop it and wait for the heal.
           if $held == null or $d.base != $held { return {next: $s} }
@@ -134,6 +134,9 @@ export def sse-response [hosts: list<string>] {
 
       if $f.topic == "panes.patch" {
         let p = $f.meta
+        if "signals" in ($p | columns) {
+          return {out: [($p.signals | to datastar-patch-signals)], next: $s}
+        }
         return {out: [(
           if $p.mode == "remove" {
             "" | to datastar-patch-elements --mode remove --selector $p.selector

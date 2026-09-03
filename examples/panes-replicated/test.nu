@@ -69,6 +69,13 @@ assert ($page5 | str contains $"grid-($n2.id)") "empty workspace can open a colu
 let bad_input = ("hello" | do $c {method: "POST", path: "/input", headers: {}, query: {pane: "nope"}} | into string)
 assert ($bad_input | str contains "unknown pane") "/input on an unknown pane errors (it needs the pane's host)"
 
+# A pong is a heartbeat on a hot path, so like a keystroke it must not grow
+# the journal that every new /sse connection replays. This doesn't touch
+# /sse itself, so it isn't affected by the interleave issue below.
+let stored = (.cat | where topic == "panes.patch" | length)
+('{"ping":4242}') | do $c {method: "POST", path: "/ping", headers: {}, query: {}} | ignore
+assert ((.cat | where topic == "panes.patch" | length) == $stored) "a pong is ephemeral"
+
 # SKIPPED, not deleted: sse-response folds an interleave of viewer's own
 # store and one replica per host (common.nu), and nushell's `interleave`
 # does not clean up early termination -- `first N`/`lines | first N`,
@@ -98,15 +105,20 @@ def skipped-sse-diff-forwarding-test [c] {
   fake-diff 200 100 "GOOD-ONE"
   fake-diff 900 999 "STALE"
   fake-diff 300 200 "GOOD-TWO"
+  # A pong rides the same topic as an element patch; the fold forwards it as a
+  # signal patch instead. Stored rather than ephemeral so the replay sees it.
+  null | .append "panes.patch" --meta {signals: '{"pong":4242}'} | ignore
   let lay = (.last "panes.layout" | get meta)
   null | .append "panes.layout" --ttl last:1 --meta {columns: ($lay.columns | append {id: "cseed", panes: [{id: "seedpane", host: "host-a"}]})} | ignore
 
-  # `first` rejects a string stream, so take lines: three sse events are nine.
-  let sse = (null | do $c {method: "GET", path: "/sse", headers: {}, query: {}} | lines | first 9 | str join "\n")
+  # `first` rejects a string stream, so take lines: four sse events are twelve.
+  let sse = (null | do $c {method: "GET", path: "/sse", headers: {}, query: {}} | lines | first 12 | str join "\n")
   assert ($sse | str contains "BASE") "sse seeds the current keyframe"
   assert ($sse | str contains "GOOD-ONE") "a diff whose base matches is forwarded"
   assert ($sse | str contains "GOOD-TWO") "a diff chaining off the previous diff is forwarded"
   assert (not ($sse | str contains "STALE")) "a diff whose base does not match is dropped"
+  assert ($sse | str contains "datastar-patch-signals") "a signals patch is forwarded as a signal event"
+  assert ($sse | str contains "signals {\"pong\":4242}") "the pong carries the client send time back"
 }
 
 print "test.nu: all assertions passed"

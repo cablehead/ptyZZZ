@@ -153,6 +153,12 @@ def emit-patch [mode: string, selector: string, html: string] {
   null | .append "panes.patch" --ttl ephemeral --meta {mode: $mode, selector: $selector, html: $html} | ignore
 }
 
+# Signals ride the same topic as elements: both are "a datastar event the fold
+# should forward", so neither the topic list nor the fold grows a second shape.
+def emit-signals [signals: record] {
+  null | .append "panes.patch" --ttl ephemeral --meta {signals: ($signals | to json --raw)} | ignore
+}
+
 let page_tpl = .mj compile ($TPL | path join "page.html")
 let pane_tpl = .mj compile ($TPL | path join "pane.html")
 let column_tpl = .mj compile ($TPL | path join "column.html")
@@ -202,6 +208,23 @@ if ($HTTP_NU.store? | default null) != null {
     })
 
     (route {method: "GET", path: "/sse"} {|req ctx| sse-response $HOST_NAMES })
+
+    # A pong is just an element patch, so it rides the pathway panes.patch
+    # already owns: no new frame type, no new branch in the /sse fold. Echoing
+    # the id back rather than a timestamp keeps clock skew out of it -- the
+    # client knows when it sent. This matters more for viewer than it did for
+    # a single unsplit process: viewer renders through a replica now, one more
+    # hop past viewer's own store for a stall to hide in, so knowing the
+    # round trip to *viewer* (not to a host) is what a stalled-stream signal
+    # should mean.
+    (route {method: "POST", path: "/ping"} {|req ctx|
+      # Datastar posts every signal as the body. Echo the client's own send
+      # time back over the SSE stream rather than in this response: the round
+      # trip we care about is the stream's, and the write keeps it warm.
+      let signals = (try { $in | into string | from json } catch { {} })
+      emit-signals {pong: ($signals.ping? | default 0)}
+      null | metadata set { merge {'http.response': {status: 204}} }
+    })
 
     (route {method: "POST", path: "/input"} {|req ctx|
       let body = $in | into string | str trim --right --char "\n"
