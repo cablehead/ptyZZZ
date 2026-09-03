@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <title>panes</title>
   <script type="module" src="{{ datastar | safe }}"></script>
-  <link rel="stylesheet" href="/static/panes.css?v=11">
+  <link rel="stylesheet" href="/static/panes.css?v=12">
 </head>
 <body data-init="@get('/sse')">
   <div id="strip">
@@ -13,6 +13,15 @@
   <div id="empty"{% if columns %} hidden{% endif %}>mod+K n to open a pane</div>
   <div id="status">
     <button type="button" id="mode-badge">navigate</button>
+    <span id="link"
+      data-signals="{ping: 0, _rtt: 0, _missed: 0}"
+      data-init__delay.500ms="$_missed++; $ping = Date.now(); @post('/ping')"
+      data-on-interval__duration.2s="$_missed++; $ping = Date.now(); @post('/ping')"
+      data-on-signal-patch-filter="{include: /^pong$/}"
+      data-on-signal-patch="$_missed = 0; $_rtt = Date.now() - $pong"
+      data-class:offline="$_missed > 2"
+      data-text="$_missed > 2 ? 'offline' : $_rtt + 'ms'"
+    >--</span>
     <span class="hint">mod+K</span>
   </div>
   {% include "panel.html" %}

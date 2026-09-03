@@ -88,6 +88,8 @@ body.mode-focus .pane.selected .cursor{background:var(--term-fg);box-shadow:none
   letter-spacing:0.04em;padding:0}
 body.mode-focus #mode-badge{color:var(--sel)}
 #status .hint{letter-spacing:0.04em}
+#link{font-variant-numeric:tabular-nums}
+#link.offline{color:var(--warn,#d08770)}
 
 .actions-backdrop{position:fixed;inset:0;z-index:1000;display:flex;align-items:flex-end;justify-content:flex-end;
   padding:0 8px var(--status-h) 0}

@@ -86,6 +86,12 @@ def emit-patch [mode: string, selector: string, html: string] {
   null | .append "panes.patch" --ttl ephemeral --meta {mode: $mode, selector: $selector, html: $html} | ignore
 }
 
+# Signals ride the same topic as elements: both are "a datastar event the fold
+# should forward", so neither the topic list nor the fold grows a second shape.
+def emit-signals [signals: record] {
+  null | .append "panes.patch" --ttl ephemeral --meta {signals: ($signals | to json --raw)} | ignore
+}
+
 let page_tpl = .mj compile ($TPL | path join "page.html")
 let pane_tpl = .mj compile ($TPL | path join "pane.html")
 let column_tpl = .mj compile ($TPL | path join "column.html")
@@ -177,6 +183,7 @@ if ($HTTP_NU.store? | default null) != null {
           if ($f.topic | str starts-with "pty-") {
             let id = ($parts | get 0 | str replace "pty-" "")
             let kind = ($parts | get 1)
+            let held = (if ($id in ($s.sent | columns)) { $s.sent | get $id } else { null })
             if not ($id in $s.live) { return {next: $s} }
 
             if $kind == "screen" {
@@ -189,20 +196,20 @@ if ($HTTP_NU.store? | default null) != null {
 
             if $kind == "diff" {
               let d = ($f.meta.body | from json)
-              let held = (if ($id in ($s.sent | columns)) { $s.sent | get $id } else { null })
               # Only forward a diff that chains to what we last sent. Anything
               # else means frames were missed; drop it and wait for the heal.
               if $held == null or $d.base != $held { return {next: $s} }
+              let o = ([
+                (if ($d.patch | is-not-empty) { $d.patch | to datastar-patch-elements })
+                (if ($d.append | is-not-empty) {
+                  $d.append | to datastar-patch-elements --mode append --selector $"#($d.target)"
+                })
+                (if ($d.trim | is-not-empty) {
+                  "" | to datastar-patch-elements --mode remove --selector ($d.trim | each {|t| $"#($t)"} | str join ",")
+                })
+              ] | compact)
               return {
-                out: ([
-                  (if ($d.patch | is-not-empty) { $d.patch | to datastar-patch-elements })
-                  (if ($d.append | is-not-empty) {
-                    $d.append | to datastar-patch-elements --mode append --selector $"#($d.target)"
-                  })
-                  (if ($d.trim | is-not-empty) {
-                    "" | to datastar-patch-elements --mode remove --selector ($d.trim | each {|t| $"#($t)"} | str join ",")
-                  })
-                ] | compact)
+                out: $o
                 next: ($s | update sent ($s.sent | upsert $id $d.seqno))
               }
             }
@@ -211,6 +218,9 @@ if ($HTTP_NU.store? | default null) != null {
 
           if $f.topic == "panes.patch" {
             let p = $f.meta
+            if "signals" in ($p | columns) {
+              return {out: [($p.signals | to datastar-patch-signals)], next: $s}
+            }
             return {out: [(
               if $p.mode == "remove" {
                 "" | to datastar-patch-elements --mode remove --selector $p.selector
@@ -225,6 +235,19 @@ if ($HTTP_NU.store? | default null) != null {
       | flatten
       | to sse
       | metadata set --content-type "text/event-stream"
+    })
+
+    # A pong is just an element patch, so it rides the pathway panes.patch
+    # already owns: no new frame type, no new branch in the /sse fold. Echoing
+    # the id back rather than a timestamp keeps clock skew out of it -- the
+    # client knows when it sent.
+    (route {method: "POST", path: "/ping"} {|req ctx|
+      # Datastar posts every signal as the body. Echo the client's own send
+      # time back over the SSE stream rather than in this response: the round
+      # trip we care about is the stream's, and the write keeps it warm.
+      let signals = (try { $in | into string | from json } catch { {} })
+      emit-signals {pong: ($signals.ping? | default 0)}
+      null | metadata set { merge {'http.response': {status: 204}} }
     })
 
     (route {method: "POST", path: "/input"} {|req ctx|
