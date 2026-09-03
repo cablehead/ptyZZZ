@@ -587,6 +587,16 @@ fn main() {
     // the deadline is already past, so the first change emits immediately;
     // during a burst, production starts on a constant cadence, and the time
     // spent producing a frame is not charged against the gate.
+    //
+    // The leading edge alone tears a line in half. The tty line discipline
+    // splits one `write("line\n")` into two master reads -- the text, then the
+    // ONLCR `\r\n` -- microseconds apart. Emitting on the first read publishes
+    // the row without the newline that scrolls it, and the scroll then lands a
+    // whole `coalesce` window later: the client paints the line, then jerks the
+    // pane up a row. Settling for a millisecond covers that gap. Keystroke echo
+    // goes from ~0.4ms to ~1.4ms, still an order of magnitude inside the window
+    // leading-edge pacing was introduced to save.
+    const SETTLE: Duration = Duration::from_millis(1);
     let mut last_frame_at = Instant::now().checked_sub(coalesce).unwrap_or_else(Instant::now);
     loop {
         {
@@ -615,7 +625,12 @@ fn main() {
             last_gen = *g;
         }
         if !done.load(Ordering::SeqCst) {
-            std::thread::sleep((last_frame_at + coalesce).saturating_duration_since(Instant::now()));
+            // Never shorter than SETTLE, so a torn write is whole before it is
+            // rendered. Mid-burst the gate already dominates and SETTLE costs
+            // nothing. Capped by `coalesce` so --coalesce 0 still means no
+            // pacing at all.
+            let gate = (last_frame_at + coalesce).saturating_duration_since(Instant::now());
+            std::thread::sleep(gate.max(SETTLE.min(coalesce)));
             let (lock, _) = &*dirty;
             last_gen = *lock.lock().unwrap();
         }
@@ -670,10 +685,12 @@ struct EmitState {
     /// concatenation of this map
     cache: BTreeMap<StableRow, String>,
     /// monotonic frame counter; rio has no terminal seqno, so this stands in
-    /// for the protocol's `seqno` field
+    /// for the protocol's `seqno` field. It bumps on every produce(), including
+    /// the ones that emit nothing.
     seq: u64,
-    /// seqno of the last frame handed out; diffs name it as their `base`.
-    last_seqno: u64,
+    /// seqno of the last frame actually sent, which is what a diff names as its
+    /// base. A produce() that emits nothing bumps `seq` but not this.
+    emitted_seqno: u64,
     last_base: StableRow,
     last_max: StableRow,
     last_cols: usize,
@@ -696,7 +713,7 @@ impl EmitState {
             target,
             cache: BTreeMap::new(),
             seq: 0,
-            last_seqno: 0,
+            emitted_seqno: 0,
             last_base: 0,
             last_max: 0,
             last_cols: 0,
@@ -919,18 +936,18 @@ impl EmitState {
                 .collect();
             self.dirty_since_keyframe = true;
             serde_json::json!({
-                "t":"diff","seqno":seqno,"base":self.last_seqno,"target":self.target,
+                "t":"diff","seqno":seqno,"base":self.emitted_seqno,"target":self.target,
                 "patch":patch,"append":append,"trim":trim
             })
         };
 
+        self.emitted_seqno = seqno;
         self.last_base = base;
         self.last_max = max;
         self.last_cols = cols;
         self.last_rows = rows;
         self.last_alt = alt;
         self.shown_cursor = cursor_now;
-        self.last_seqno = seqno;
         self.sent_initial = true;
         Some(frame)
     }
@@ -1592,6 +1609,41 @@ mod tests {
         let f = st.produce(&mut t, false).expect("emits a frame");
         assert_eq!(f["t"], "screen");
         assert!(f.get("base").is_none(), "keyframes do not chain");
+    }
+
+    /// A produce() that emits nothing must not advance what the next diff names
+    /// as its base. wezterm bumps its seqno for damage that renders to identical
+    /// html (a prompt redrawing the same cells), and produce() returns None for
+    /// those. If that seqno became the next diff's base, the client would be
+    /// comparing against a frame it was never sent, drop a good diff, and sit
+    /// stale until the healing keyframe.
+    #[test]
+    fn a_no_op_produce_does_not_advance_base() {
+        let mut t = term(24, 80);
+        let mut st = EmitState::new("grid".to_string());
+
+        feed(&mut t, b"hello");
+        let held = seqno(&st.produce(&mut t, false).expect("keyframe"));
+
+        // An idle poll: no input at all. rio's seqno still bumps here, so this
+        // is the common case on this branch, not the rare one.
+        assert!(st.produce(&mut t, false).is_none(), "idle poll must emit nothing");
+
+        // Rewrite the same cells: damage, but nothing visibly changes.
+        feed(&mut t, b"\x1b[Hhello");
+        assert!(
+            st.produce(&mut t, false).is_none(),
+            "identical redraw must emit nothing"
+        );
+
+        feed(&mut t, b"\r\nworld");
+        let f = st.produce(&mut t, false).expect("diff");
+        assert_eq!(f["t"], "diff");
+        assert_eq!(
+            f["base"].as_u64().expect("diff carries base"),
+            held,
+            "base must name the last frame actually sent, not a skipped seqno"
+        );
     }
 
     /// A gap is detectable: skipping a produce() leaves the subscriber's held
