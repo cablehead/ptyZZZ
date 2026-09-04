@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <title>through</title>
   <script type="module" src="{{ datastar | safe }}"></script>
-  <link rel="stylesheet" href="/static/through.css?v=11">
+  <link rel="stylesheet" href="/static/through.css?v=12">
 </head>
 <body data-init="@get('/sse')">
   <div class="scene">
@@ -19,7 +19,6 @@
           <div class="face east" aria-hidden="true"></div>
           <div class="caption pane-cap">static HTML</div>
         </div>
-        <div class="shaft" aria-hidden="true"></div>
         <div id="beam" aria-hidden="true"></div>
         <div class="wez">
           <div class="wez-front">
@@ -43,6 +42,6 @@
       data-text="$_missed > 2 ? 'offline' : $_rtt + 'ms'"
     >--</span>
   </div>
-  <script type="module" src="/static/through.js?v=12"></script>
+  <script type="module" src="/static/through.js?v=13"></script>
 </body>
 </html>

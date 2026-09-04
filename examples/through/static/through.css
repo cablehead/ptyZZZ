@@ -67,17 +67,6 @@ body.side .caption{opacity:1}
 .b1{background:var(--c1)}.b2{background:var(--c2)}.b3{background:var(--c3)}.b4{background:var(--c4)}
 .b5{background:var(--c5)}.b6{background:var(--c6)}.b7{background:var(--c7)}
 
-/* YZ plane: edge-on from the front, a light shaft once the stage yaws. */
-.shaft{position:absolute;left:50%;top:0;height:100%;width:var(--depth);
-  margin-left:calc(var(--depth) / -2);
-  transform:translateZ(calc(var(--depth) / -2)) rotateY(90deg);
-  background:linear-gradient(90deg,
-    rgba(102,204,255,0.05) 0%,
-    rgba(102,204,255,0.14) 22%,
-    rgba(102,204,255,0.26) 100%);
-  clip-path:polygon(0 28%, 100% 0, 100% 100%, 0 72%);
-  pointer-events:none}
-
 #beam{position:absolute;inset:0;transform-style:preserve-3d;pointer-events:none;overflow:visible}
 .fly{position:absolute;left:50%;top:50%;white-space:nowrap;font:28px/1.2 var(--term-font);
   pointer-events:none;will-change:transform,opacity;transform-origin:center center}

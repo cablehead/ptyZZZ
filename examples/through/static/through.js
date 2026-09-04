@@ -206,7 +206,7 @@ function spawnFlyer(text, kind) {
     {transform: from, opacity: 1, offset: 0.06},
     {transform: to, opacity: 0.9, offset: 0.82},
     {transform: to, opacity: 0.12}
-  ], {duration: kind === "pkt" ? 2200 : 3200, easing: "linear"}).finished
+  ], {duration: kind === "pkt" ? 1100 : 1600, easing: "linear"}).finished
     .then(() => el.remove())
     .catch(() => el.remove());
 }
