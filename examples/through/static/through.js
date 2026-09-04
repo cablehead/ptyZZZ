@@ -103,7 +103,7 @@ function fit() {
     lastFit = {cols, rows};
     send({t:"resize", cols, rows});
   }
-  sizeWez();
+  syncWezScreen();
 }
 function scheduleFit() {
   clearTimeout(fitTimer);
@@ -228,20 +228,9 @@ function seedBeam() {
 
 const orbit = document.querySelector(".orbit");
 const stage = document.querySelector(".stage");
-const wezEl = document.querySelector(".wez");
 const wezScreen = document.querySelector(".wez-screen");
 let beamReady = false;
 let beamWait = 0;
-
-function sizeWez() {
-  if (!wezEl || !pane.clientWidth || !pane.clientHeight) return;
-  const h = 200;
-  const w = h * (pane.clientWidth / pane.clientHeight);
-  wezEl.style.width = w + "px";
-  wezEl.style.height = h + "px";
-  wezEl.style.margin = `${-h / 2}px 0 0 ${-w / 2}px`;
-  syncWezScreen();
-}
 
 function syncWezScreen() {
   const src = document.getElementById("grid-" + PANE);
@@ -251,12 +240,13 @@ function syncWezScreen() {
   for (const el of clone.querySelectorAll("[id]")) el.removeAttribute("id");
   wezScreen.replaceChildren(clone);
   const iw = Math.max(clone.scrollWidth, clone.offsetWidth, 1);
+  const ih = Math.max(scrollEl.clientHeight, 1);
   const dw = wezScreen.clientWidth;
-  if (!dw) return;
-  const s = dw / iw;
+  const dh = wezScreen.clientHeight;
+  if (!dw || !dh) return;
+  const s = Math.min(dw / iw, dh / ih);
   clone.style.transformOrigin = "top left";
   clone.style.transform = `scale(${s})`;
-  // Match the pane viewport, not the clone's layout bottom (blank pty rows).
   clone.style.top = (-(scrollEl.scrollTop) * s) + "px";
 }
 

@@ -7,7 +7,7 @@
   --dim:#888;--sel:#6cf;--border:#444;
   --cell-h:17px;
   --depth:1500px;
-  --lamp:720px;
+  --lamp:420px;
   --slab:12px;
   --c0:#000;--c1:#cd0000;--c2:#00cd00;--c3:#cdcd00;--c4:#1e90ff;--c5:#cd00cd;
   --c6:#00cdcd;--c7:#e5e5e5;--c8:#4d4d4d;--c9:#ff5454;--c10:#54ff54;--c11:#ffff54;
@@ -103,8 +103,11 @@ body.side .lamp{opacity:1}
 .fly.html{color:#8cf;text-shadow:0 0 8px #4af}
 .fly.pkt{color:#fc8;text-shadow:0 0 8px #c80}
 
-.wez{position:absolute;left:50%;top:50%;width:320px;height:200px;margin:-100px 0 0 -160px;
-  transform:translateZ(calc(-1 * var(--depth)));transform-style:preserve-3d;pointer-events:none}
+.wez{position:absolute;inset:0;width:auto;height:auto;margin:0;
+  /* Non-uniform scale: a far, small copy does not pick up the pane's
+     perspective (near edge tall). Extra Y matches the pane's on-screen shape. */
+  transform:translateZ(calc(-1 * var(--depth))) scale(0.22, 0.31);
+  transform-origin:center center;transform-style:preserve-3d;pointer-events:none}
 .wez-front{position:absolute;inset:0;background:#111;border:1px solid var(--sel);
   transform:translateZ(6px);backface-visibility:hidden;
   box-shadow:0 0 28px rgba(102,204,255,0.25)}
