@@ -8,6 +8,7 @@
   --cell-h:17px;
   --depth:1500px;
   --lamp:420px;
+  --beam-len:calc(var(--depth) + var(--lamp));
   --slab:12px;
   --c0:#000;--c1:#cd0000;--c2:#00cd00;--c3:#cdcd00;--c4:#1e90ff;--c5:#cd00cd;
   --c6:#00cdcd;--c7:#e5e5e5;--c8:#4d4d4d;--c9:#ff5454;--c10:#54ff54;--c11:#ffff54;
@@ -32,7 +33,8 @@ body.side .stage{transform:scale(0.64) translateX(-4%)}
 .slab{position:absolute;inset:0;transform-style:preserve-3d}
 .face{position:absolute;background:var(--term-bg)}
 .face.front{inset:0;transform:translateZ(calc(var(--slab) / 2));
-  display:flex;flex-direction:column;overflow:hidden}
+  display:flex;flex-direction:column;overflow:hidden;
+  box-sizing:border-box;border:1px solid var(--sel)}
 .face.back{inset:0;transform:rotateY(180deg) translateZ(calc(var(--slab) / 2));
   background:#0a0a0a;border:1px solid #1e3a50;
   box-shadow:0 0 48px rgba(80,180,255,0.12)}
@@ -68,28 +70,22 @@ body.side .caption{opacity:1}
 .b1{background:var(--c1)}.b2{background:var(--c2)}.b3{background:var(--c3)}.b4{background:var(--c4)}
 .b5{background:var(--c5)}.b6{background:var(--c6)}.b7{background:var(--c7)}
 
-/* Frustum: a point behind wezterm, through the wez-screen, opening to the pane.
-   Two crossing planes (YZ and XZ) so it reads as a volume, not a floating quad. */
+/* Pyramid: lamp behind wezterm to the four edges of the pane. */
 .light{position:absolute;inset:0;transform-style:preserve-3d;pointer-events:none;
   opacity:0;transition:opacity 0.4s ease}
 body.side .light{opacity:1}
-.light-v,.light-h{position:absolute;pointer-events:none;
-  background:linear-gradient(90deg,
-    rgba(102,204,255,0.22) 0%,
-    rgba(102,204,255,0.10) 35%,
-    rgba(102,204,255,0.04) 100%)}
-.light-v{left:50%;top:0;height:100%;width:calc(var(--depth) + var(--lamp));
-  margin-left:calc((var(--depth) + var(--lamp)) / -2);
-  transform:translateZ(calc((var(--depth) + var(--lamp)) / -2)) rotateY(90deg);
-  clip-path:polygon(0% 49.4%, 100% 0%, 100% 100%, 0% 50.6%)}
-.light-h{left:0;top:50%;width:100%;height:calc(var(--depth) + var(--lamp));
-  margin-top:calc((var(--depth) + var(--lamp)) / -2);
-  transform:translateZ(calc((var(--depth) + var(--lamp)) / -2)) rotateX(-90deg);
-  background:linear-gradient(180deg,
-    rgba(102,204,255,0.22) 0%,
-    rgba(102,204,255,0.10) 35%,
-    rgba(102,204,255,0.04) 100%);
-  clip-path:polygon(0% 0%, 100% 0%, 50.6% 100%, 49.4% 100%)}
+.light-top,.light-bot,.light-west,.light-east{position:absolute;pointer-events:none;
+  background:linear-gradient(90deg, rgba(102,204,255,0.18), rgba(102,204,255,0.03))}
+/* Hinge on each pane edge and swing back toward the lamp. 82deg is 90deg
+   minus the offset from pane-center to the edge over --beam-len. */
+.light-top{left:0;top:0;width:100%;height:var(--beam-len);transform-origin:50% 0;
+  transform:rotateX(-82deg);clip-path:polygon(0 0, 100% 0, 50% 100%)}
+.light-bot{left:0;bottom:0;width:100%;height:var(--beam-len);transform-origin:50% 100%;
+  transform:rotateX(82deg);clip-path:polygon(50% 0, 0 100%, 100% 100%)}
+.light-west{left:0;top:0;width:var(--beam-len);height:100%;transform-origin:0 50%;
+  transform:rotateY(82deg);clip-path:polygon(0 0, 0 100%, 100% 50%)}
+.light-east{right:0;top:0;width:var(--beam-len);height:100%;transform-origin:100% 50%;
+  transform:rotateY(-82deg);clip-path:polygon(100% 0, 100% 100%, 0 50%)}
 .lamp{position:absolute;left:50%;top:50%;width:14px;height:14px;margin:-7px 0 0 -7px;
   border-radius:50%;background:radial-gradient(circle, #def 0%, #6cf 40%, transparent 70%);
   transform:translateZ(calc(-1 * (var(--depth) + var(--lamp))));
