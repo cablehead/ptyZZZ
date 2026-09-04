@@ -340,19 +340,51 @@ document.getElementById("mode-badge").addEventListener("click", () => {
   if (mode === "focus" && selected) parkFocus();
 });
 
+// An unpinned pane relies on scroll anchoring to hold the line under the
+// user's eye as rows trim off the top (see .unstuck in panes.css). Safari has
+// no scroll anchoring, so there we do the browser's job by hand: count the
+// rows a batch removed and add their height back to scrollTop.
+const ANCHORS = CSS.supports("overflow-anchor", "auto");
+// Only a trim shifts content: rows come off the top, appended rows land below
+// the view. A row both removed and re-added in one batch is a morph, not a
+// trim, so it nets out.
+function holdLine(name, removed, added) {
+  const box = scrollBox(name);
+  if (!box || box.scrollTop === 0) return;
+  let n = 0;
+  for (const id of removed) if (!added.has(id)) n++;
+  if (!n) return;
+  const h = box.querySelector(".row")?.offsetHeight || measureCell().h;
+  box.scrollTop = Math.max(0, box.scrollTop - n * h);
+  lastWrote[name] = box.scrollTop;
+}
+function rowIds(nodes, into) {
+  for (const n of nodes) {
+    if (n.nodeType === 1 && n.classList.contains("row")) into.add(n.id);
+  }
+}
+
 // Every pane tracks its own output, not just the selected one. Datastar morphs
 // a patch in synchronously, so one observer batch is one server frame; the
-// panes it touched are the ones to re-pin.
+// panes it touched are the ones to re-pin. The callback is a microtask, so a
+// scrollTop correction here lands before the frame paints.
 new MutationObserver(muts => {
   wireAll();
   const touched = new Set();
+  const removed = {}, added = {};
   for (const m of muts) {
     const el = m.target.nodeType === 1 ? m.target : m.target.parentElement;
     const name = el?.closest?.(".pane")?.dataset.pane;
-    if (name) touched.add(name);
+    if (!name) continue;
+    touched.add(name);
+    if (!ANCHORS && m.type === "childList") {
+      rowIds(m.removedNodes, removed[name] ??= new Set());
+      rowIds(m.addedNodes, added[name] ??= new Set());
+    }
   }
   for (const name of touched) {
     if (stick[name]) stickToBottom(name);
+    else if (removed[name]) holdLine(name, removed[name], added[name]);
   }
 }).observe(document.body, {childList: true, subtree: true, characterData: true});
 
