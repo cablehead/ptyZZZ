@@ -89,14 +89,12 @@ body.side .caption{opacity:1}
 
 .wez{position:absolute;left:50%;top:50%;width:360px;height:200px;margin:-100px 0 0 -180px;
   transform:translateZ(calc(-1 * var(--depth)));transform-style:preserve-3d;pointer-events:none}
-.wez-front,.wez-west,.wez-east{position:absolute;inset:0;background:#151515;border:1px solid var(--sel);
-  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px}
-.wez-front{transform:translateZ(40px);
+.wez-front{position:absolute;inset:0;background:#151515;border:1px solid var(--sel);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;
+  transform:translateZ(6px);
   box-shadow:0 0 28px rgba(102,204,255,0.35)}
 .wez-back{position:absolute;inset:0;background:#0c0c0c;border:1px solid #345;
-  transform:rotateY(180deg) translateZ(40px)}
-.wez-west{width:80px;left:0;right:auto;transform-origin:left center;transform:rotateY(-90deg)}
-.wez-east{width:80px;right:0;left:auto;transform-origin:right center;transform:rotateY(90deg)}
+  transform:rotateY(180deg) translateZ(6px)}
 .wez-lens{width:36px;height:36px;border-radius:50%;
   background:radial-gradient(circle at 40% 35%, #eef, #6cf 34%, #1a8 68%, #012);
   box-shadow:0 0 22px #6cf}
