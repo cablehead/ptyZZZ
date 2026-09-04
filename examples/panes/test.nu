@@ -33,6 +33,14 @@ for _ in 1..50 {
 }
 assert $seen "pty-p1 screen shows echo panes-ok after /input"
 
+# A join must not wait out the healing interval. Once the replay is done the
+# fold asks each live pane for a keyframe, and that keyframe lands on the same
+# stream. So with no input in between, one join sees two grid-p1 morphs: the
+# stored seed, then the fresh one. Two sse events are six lines; if the second
+# never comes this blocks, which is how the failure shows.
+let join = (null | do $c {method: "GET", path: "/sse", headers: {}, query: {}} | lines | first 6 | str join "\n")
+assert (($join | split row 'id="grid-p1"' | length) == 3) "a join replays the seed and then gets a requested keyframe"
+
 let n1 = (do $c {method: "POST", path: "/pane/new-column", headers: {}, query: {after: "p1"}} | into string | from json)
 assert ($n1.id == "p2") $"new-column id p2, got ($n1.id)"
 assert ($n1.col == "c2") $"new-column col c2, got ($n1.col)"

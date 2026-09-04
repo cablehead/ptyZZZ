@@ -23,10 +23,14 @@
 # frame on /sse. Keyframes stay in the CAS: stored (last:1), large, rare.
 #   GET  /sse     -> follow every pane's topics, patch by element id
 #
-# A joiner replays each pane's stored keyframe and applies live diffs on top;
-# any missed diffs or delta bugs heal at the next keyframe. The client routes
-# keystrokes to the focused pane (click to focus) and fits each pane's pty to
-# its own box via {t:resize}.
+# A joiner replays each pane's stored keyframe, asks each pane for a fresh one
+# ({t:screen}) once xs signals the follow is live, and applies live diffs on
+# top; any missed diffs or delta bugs heal at the next keyframe. Diffs are
+# ephemeral, so the request must go out after the follow is open: xs emits
+# `xs.threshold` after the replay, and the request rides on that.
+#
+# The client routes keystrokes to the focused pane (click to focus) and fits
+# each pane's pty to its own box via {t:resize}.
 
 use http-nu/datastar *
 use http-nu/router *
@@ -447,9 +451,18 @@ let PAGE = (
     # trimmed rows (remove by id).
     (route {method: "GET", path: "/sse"} {|req ctx|
       .cat --follow
-      | where topic in $topics
+      | where topic in $topics or topic == "xs.threshold"
       | each {|f|
-          if ($f.topic | str ends-with ".screen") {
+          if $f.topic == "xs.threshold" {
+            # The replay is done and this follow is live, so a keyframe
+            # requested now lands on this stream, with no diffs lost between
+            # it and the seed. The stale seed already painted; this replaces
+            # it within one coalesce window, instead of at the next heal.
+            for p in $pane_names {
+              '{"t":"screen"}' + "\n" | .append $"pty-($p).send" --ttl ephemeral | ignore
+            }
+            []
+          } else if ($f.topic | str ends-with ".screen") {
             [(.cas $f.hash | to datastar-patch-elements)]
           } else {
             let d = $f.meta.body | from json

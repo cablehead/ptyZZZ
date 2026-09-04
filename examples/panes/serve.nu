@@ -150,6 +150,12 @@ if ($HTTP_NU.store? | default null) != null {
     # forwarded only when it chains to the last frame this connection sent, and a
     # dropped one is repaired by the healing keyframe -- receiving a diff proves
     # the pane is dirty, so one is due within ptyZZZ's --keyframe-interval.
+    #
+    # The seed is up to one interval stale, and waiting out the heal is what
+    # makes a refresh feel slow. So once the replay is done, ask every live
+    # pane for a keyframe ({t:screen}). xs marks that point with `xs.threshold`:
+    # the follow is open, so the requested keyframe and every diff after it land
+    # on this stream. Asking any earlier would race the ephemeral diffs.
     (route {method: "GET", path: "/sse"} {|req ctx|
       let live = (try { layout | get columns | each {|c| $c.panes} | flatten } catch { [] })
       let seeds = ($live | each {|id| .last $"pty-($id).screen"} | compact)
@@ -165,6 +171,13 @@ if ($HTTP_NU.store? | default null) != null {
       .cat --follow --from $from
       | generate {|f, s|
           let parts = ($f.topic | split row ".")
+
+          if $f.topic == "xs.threshold" {
+            for id in $s.live {
+              '{"t":"screen"}' + "\n" | .append $"pty-($id).send" --ttl ephemeral | ignore
+            }
+            return {next: $s}
+          }
 
           # Liveness, so a closed pane's frames are not forwarded to a page that
           # no longer has an element for them.

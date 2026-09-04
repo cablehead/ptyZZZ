@@ -127,6 +127,7 @@ Both directions are newline-delimited JSON, one object per line. Commands in:
 ```
 {"t":"input","b":"ls\n"}              raw bytes for the pty
 {"t":"resize","cols":80,"rows":24}
+{"t":"screen"}                        emit a keyframe now
 ```
 
 Screen out:
@@ -257,6 +258,12 @@ Keyframes plus diffs work: the stored keyframe (`ttl last:1`) is where a
 subscriber starts, and diffs are ephemeral. While diffs flow, a fresh keyframe
 goes out every `--keyframe-interval` seconds (default 5), so a missed diff
 heals within one interval.
+
+The stored keyframe can be that stale too, and a joiner would otherwise wait
+out the interval to catch up. So the `/sse` handler sends `{"t":"screen"}` to
+each pane once the replay is done and the follow is live (xs marks that point
+with an `xs.threshold` frame), and a fresh keyframe lands within one coalesce
+window. Diffs are ephemeral, so the request must not go out any earlier.
 
 The 16ms window caps output near 62 frames per second per terminal. A full
 repaint (htop, a vim redraw) is the worst case for diffs and the best case for

@@ -9,6 +9,7 @@ a nushell service closure adapts these lines to/from frames.
     {"t":"key","key":"ArrowUp","mods":0}
     {"t":"paste","s":"multi\nline"}
     {"t":"resize","cols":80,"rows":24}
+    {"t":"screen"}                  emit a keyframe now
 
 `key` is a semantic key event: a browser KeyboardEvent.key name (a single
 character, the editing/navigation cluster, or F1-F24) plus a modifier
@@ -18,6 +19,12 @@ which a byte-sending client cannot know. `paste` is wrapped in
 bracketed-paste markers when the application has enabled them. Prefer
 these over `input` for anything a user typed; `input` stays as the raw
 escape hatch (and carries IME-composed text).
+
+`screen` asks for a keyframe on the next emit, whether or not anything
+changed. An adapter sends it when a subscriber joins: the stored keyframe can
+be up to `--keyframe-interval` stale, an idle pane never heals on its own, and
+this replaces the wait with one coalesce window. It also resets the healing
+clock.
 
 ## stdout (events <- pty), one JSON object per line
 

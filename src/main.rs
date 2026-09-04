@@ -106,6 +106,9 @@ enum Cmd {
     /// pasted text; wrapped in bracketed-paste markers when the app enabled them
     Paste { s: String },
     Resize { cols: u16, rows: u16 },
+    /// ask for a keyframe now: a joiner's fresh join point, instead of
+    /// waiting out the healing interval
+    Screen,
 }
 
 /// Browser `KeyboardEvent.key` name -> wezterm KeyCode. Single chars pass
@@ -300,6 +303,8 @@ fn main() {
     let term = Arc::new(Mutex::new(term));
     let dirty = Arc::new((Mutex::new(0u64), Condvar::new()));
     let done = Arc::new(AtomicBool::new(false));
+    // set by a {t:screen} command, consumed by the emitter's next pass
+    let want_keyframe = Arc::new(AtomicBool::new(false));
     let master = Arc::new(Mutex::new(pair.master));
 
     // reader: drain pty -> feed wezterm -> bump dirty.
@@ -340,6 +345,7 @@ fn main() {
         let exit_on_eof = on_stdin_eof == "exit";
         let term = term.clone();
         let dirty = dirty.clone();
+        let want_keyframe = want_keyframe.clone();
         std::thread::spawn(move || {
             let stdin = std::io::stdin();
             for line in stdin.lock().lines() {
@@ -393,6 +399,10 @@ fn main() {
                             pixel_height: 0,
                             dpi: 0,
                         });
+                        bump(&dirty);
+                    }
+                    Ok(Cmd::Screen) => {
+                        want_keyframe.store(true, Ordering::SeqCst);
                         bump(&dirty);
                     }
                     Err(_) => eprintln!("ptyZZZ: bad command: {line}"),
@@ -461,8 +471,8 @@ fn main() {
             last_gen = *lock.lock().unwrap();
         }
 
-        let keyframe_due =
-            state.dirty_since_keyframe && state.last_keyframe.elapsed() >= keyframe_interval;
+        let keyframe_due = want_keyframe.swap(false, Ordering::SeqCst)
+            || (state.dirty_since_keyframe && state.last_keyframe.elapsed() >= keyframe_interval);
         last_frame_at = Instant::now();
         let frame = {
             let mut t = term.lock().unwrap();
@@ -1134,6 +1144,29 @@ mod tests {
             );
             held = seqno(&f);
         }
+    }
+
+    /// A requested keyframe ({t:screen}) is owed even when nothing changed:
+    /// it is a joiner's fresh join point, and an idle pane never earns a
+    /// healing keyframe on its own. It re-sends the current screen under the
+    /// held seqno, so the diff chain continues from it unbroken.
+    #[test]
+    fn a_requested_keyframe_emits_with_nothing_dirty() {
+        let mut t = term(24, 80);
+        let mut st = EmitState::new("grid".to_string());
+        t.advance_bytes(b"hello\r\n");
+        let held = seqno(&st.produce(&mut t, false).expect("opening keyframe"));
+        assert!(st.produce(&mut t, false).is_none(), "idle pane emits nothing");
+
+        let f = st.produce(&mut t, true).expect("a requested keyframe emits");
+        assert_eq!(f["t"], "screen");
+        assert_eq!(seqno(&f), held, "nothing changed, so the seqno holds");
+        assert!(f["html"].as_str().unwrap().contains("hello"));
+
+        t.advance_bytes(b"world\r\n");
+        let d = st.produce(&mut t, false).expect("diff");
+        assert_eq!(d["t"], "diff");
+        assert_eq!(d["base"].as_u64().unwrap(), held, "the chain continues from the request");
     }
 
     /// A keyframe is self-contained, so it carries no base: a subscriber adopts
