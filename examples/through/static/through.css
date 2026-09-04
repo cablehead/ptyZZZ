@@ -104,9 +104,7 @@ body.side .lamp{opacity:1}
 .fly.pkt{color:#fc8;text-shadow:0 0 8px #c80}
 
 .wez{position:absolute;inset:0;width:auto;height:auto;margin:0;
-  /* Non-uniform scale: a far, small copy does not pick up the pane's
-     perspective (near edge tall). Extra Y matches the pane's on-screen shape. */
-  transform:translateZ(calc(-1 * var(--depth))) scale(0.22, 0.31);
+  transform:translateZ(calc(-1 * var(--depth))) scale(0.22);
   transform-origin:center center;transform-style:preserve-3d;pointer-events:none}
 .wez-front{position:absolute;inset:0;background:#111;border:1px solid var(--sel);
   transform:translateZ(6px);backface-visibility:hidden;
