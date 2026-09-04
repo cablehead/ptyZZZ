@@ -1,0 +1,27 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>through shots</title>
+  <link rel="stylesheet" href="/static/through.css?v=16">
+</head>
+<body class="shots-page">
+  <header>
+    <a href="/">back to the pane</a>
+    <h1>through captures</h1>
+    <p>Local only. These files are gitignored. This is what the agent last saw on this machine, so we can compare with what you see.</p>
+  </header>
+  {% if not files %}
+  <p>No captures in examples/through/shots yet.</p>
+  {% endif %}
+  {% for f in files %}
+    {% if f.kind == "video" %}
+      <h2>{{ f.name }}</h2>
+      <video controls playsinline src="/shots/{{ f.name }}"></video>
+    {% elif f.kind == "img" %}
+      <h2>{{ f.name }}</h2>
+      <a href="/shots/{{ f.name }}"><img src="/shots/{{ f.name }}" alt="{{ f.name }}"></a>
+    {% endif %}
+  {% endfor %}
+</body>
+</html>

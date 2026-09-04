@@ -14,6 +14,7 @@ assert ($page | str contains "/ping") "GET / wires the rtt ping"
 assert ($page | str contains "/static/through.js") "GET / loads static js"
 assert ($page | str contains "/datastar@1.0.2.js") "GET / loads datastar"
 assert ($page | str contains "wezterm") "GET / has the wezterm box"
+assert ($page | str contains 'href="/shots"') "GET / links to the local shots gallery"
 assert (not ($page | str contains "actions-panel")) "no panes command panel"
 assert (not ($page | str contains "/pane/new-column")) "no new-column"
 assert (not ($page | str contains "/pane/split")) "no split"
@@ -42,3 +43,6 @@ assert $seen "pty-p1 screen shows echo through-ok after /input"
 # this blocks, which is how the failure shows.
 let join = (null | do $c {method: "GET", path: "/sse", headers: {}, query: {}} | lines | first 6 | str join "\n")
 assert (($join | split row 'id="grid-p1"' | length) == 3) "a join replays the seed and then gets a requested keyframe"
+
+let gallery = (do $c {method: "GET", path: "/shots", headers: {}, query: {}} | into string)
+assert ($gallery | str contains "through captures") "GET /shots is the local gallery"

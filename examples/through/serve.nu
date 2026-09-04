@@ -149,6 +149,24 @@ if ($HTTP_NU.store? | default null) != null {
       null | metadata set { merge {'http.response': {status: 204}} }
     })
 
+    (route {method: "GET", path: "/shots"} {|req ctx|
+      let dir = $HERE | path join "shots"
+      let files = if ($dir | path exists) {
+        ls $dir | where {|x| $x.type == "file" or $x.type == "image"} | each {|x|
+          let name = $x.name | path basename
+          let ext = ($name | path parse | get extension | default "" | str downcase)
+          let kind = if $ext in ["png" "jpg" "jpeg" "webp" "gif"] { "img" } else if $ext in ["webm" "mp4"] { "video" } else { "skip" }
+          {name: $name, kind: $kind}
+        } | where kind != "skip" | sort-by name
+      } else { [] }
+      {files: $files} | .mj ($TPL | path join "shots.html")
+      | metadata set --content-type "text/html"
+    })
+
+    (route {method: "GET", path-matches: "/shots/:file"} {|req ctx|
+      .static ($HERE | path join "shots") $"/($ctx.file)"
+    })
+
     (route {method: "GET", path-matches: "/static/:file"} {|req ctx|
       .static ($HERE | path join "static") $"/($ctx.file)"
     })

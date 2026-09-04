@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <title>through</title>
   <script type="module" src="{{ datastar | safe }}"></script>
-  <link rel="stylesheet" href="/static/through.css?v=15">
+  <link rel="stylesheet" href="/static/through.css?v=16">
 </head>
 <body data-init="@get('/sse')">
   <div class="scene">
@@ -37,6 +37,7 @@
   </div>
   <div id="chrome">
     <button type="button" id="toggle" aria-pressed="false">see through</button>
+    <a href="/shots" id="shots-link">shots</a>
     <span id="link"
       data-signals="{ping: 0, _rtt: 0, _missed: 0}"
       data-init__delay.500ms="$_missed++; $ping = Date.now(); @post('/ping')"

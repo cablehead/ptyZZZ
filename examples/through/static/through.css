@@ -123,5 +123,15 @@ body.side .lamp{opacity:1}
   padding:5px 10px;cursor:pointer;letter-spacing:0.04em}
 #toggle:hover{border-color:var(--sel)}
 body.side #toggle{border-color:var(--sel);color:var(--sel)}
+#shots-link{color:var(--dim);text-decoration:none;letter-spacing:0.04em}
+#shots-link:hover{color:var(--sel)}
 #link{font-variant-numeric:tabular-nums}
 #link.offline{color:#d08770}
+
+body.shots-page{background:#000;color:var(--term-fg);font:14px/1.4 var(--term-font);
+  overflow:auto;padding:24px 28px 48px;max-width:1100px}
+body.shots-page header a{color:var(--sel);text-decoration:none}
+body.shots-page h1{font-size:18px;font-weight:normal;letter-spacing:0.06em;margin:12px 0 8px}
+body.shots-page h2{font-size:12px;font-weight:normal;letter-spacing:0.08em;color:var(--dim);margin:28px 0 10px}
+body.shots-page p{color:var(--dim);max-width:62ch}
+body.shots-page video,body.shots-page img{display:block;width:min(100%,960px);background:#111;border:1px solid var(--border)}
