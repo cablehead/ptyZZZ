@@ -1,0 +1,55 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>through</title>
+  <script type="module" src="{{ datastar | safe }}"></script>
+  <link rel="stylesheet" href="/static/through.css?v=6">
+</head>
+<body data-init="@get('/sse')">
+  <div class="scene">
+    <div class="stage">
+      <div class="slab pane" data-pane="p1">
+        <div class="face front">
+          <div class="scroll"><div id="grid-p1">connecting...</div></div>
+        </div>
+        <div class="face back" aria-hidden="true"></div>
+        <div class="face west" aria-hidden="true"><span class="edge-label">static HTML</span></div>
+        <div class="face east" aria-hidden="true"><span class="edge-label">static HTML</span></div>
+        <div class="caption pane-cap">static HTML</div>
+      </div>
+      <div class="shaft" aria-hidden="true"></div>
+      <div id="beam" aria-hidden="true"></div>
+      <div class="wez">
+        <div class="wez-front">
+          <div class="wez-lens"></div>
+          <div class="wez-name">wezterm</div>
+          <div class="wez-sub">headless</div>
+        </div>
+        <div class="wez-west" aria-hidden="true">
+          <div class="wez-name">wezterm</div>
+          <div class="wez-sub">headless</div>
+        </div>
+        <div class="wez-east" aria-hidden="true">
+          <div class="wez-name">wezterm</div>
+          <div class="wez-sub">headless</div>
+        </div>
+        <div class="wez-back" aria-hidden="true"></div>
+      </div>
+    </div>
+  </div>
+  <div id="chrome">
+    <button type="button" id="toggle" aria-pressed="false">see through</button>
+    <span id="link"
+      data-signals="{ping: 0, _rtt: 0, _missed: 0}"
+      data-init__delay.500ms="$_missed++; $ping = Date.now(); @post('/ping')"
+      data-on-interval__duration.2s="$_missed++; $ping = Date.now(); @post('/ping')"
+      data-on-signal-patch-filter="{include: /^pong$/}"
+      data-on-signal-patch="$_missed = 0; $_rtt = Date.now() - $pong"
+      data-class:offline="$_missed > 2"
+      data-text="$_missed > 2 ? 'offline' : $_rtt + 'ms'"
+    >--</span>
+  </div>
+  <script type="module" src="/static/through.js?v=6"></script>
+</body>
+</html>

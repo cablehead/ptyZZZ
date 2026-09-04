@@ -1,0 +1,114 @@
+@font-face{font-family:"JetBrainsMonoNerd";font-weight:normal;font-style:normal;font-display:swap;
+  src:url("/fonts/JetBrainsMonoNLNerdFontMono-Regular.woff2") format("woff2")}
+@font-face{font-family:"JetBrainsMonoNerd";font-weight:bold;font-style:normal;font-display:swap;
+  src:url("/fonts/JetBrainsMonoNLNerdFontMono-Bold.woff2") format("woff2")}
+
+:root{--term-font:"JetBrainsMonoNerd",monospace;--term-bg:#111;--term-fg:#ddd;
+  --dim:#888;--sel:#6cf;--border:#444;
+  --cell-h:17px;
+  --depth:560px;
+  --slab:12px;
+  --c0:#000;--c1:#cd0000;--c2:#00cd00;--c3:#cdcd00;--c4:#1e90ff;--c5:#cd00cd;
+  --c6:#00cdcd;--c7:#e5e5e5;--c8:#4d4d4d;--c9:#ff5454;--c10:#54ff54;--c11:#ffff54;
+  --c12:#5454ff;--c13:#ff54ff;--c14:#54ffff;--c15:#fff;}
+
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:#000;color:var(--term-fg);font:14px/1.2 var(--term-font);overflow:hidden}
+
+.scene{position:absolute;inset:0;perspective:1800px;perspective-origin:50% 50%}
+.stage{position:absolute;inset:0;transform-style:preserve-3d;
+  transform:rotateY(0deg);
+  transform-origin:50% 50% calc(var(--depth) / -2);
+  transition:transform 1s cubic-bezier(0.4, 0, 0.2, 1)}
+/* Pivot is the shaft midpoint, so the pane and wezterm swing apart instead
+   of the box staying hidden behind the plane. Yaw almost edge-on, with a
+   little pitch so the pane face still reads. */
+body.side .stage{transform:scale(0.6) rotateX(10deg) rotateY(66deg)}
+
+.slab{position:absolute;inset:0;transform-style:preserve-3d}
+.face{position:absolute;background:var(--term-bg)}
+.face.front{inset:0;transform:translateZ(calc(var(--slab) / 2));
+  display:flex;flex-direction:column;overflow:hidden;backface-visibility:hidden}
+.face.back{inset:0;transform:rotateY(180deg) translateZ(calc(var(--slab) / 2));
+  background:#0a0a0a;border:1px solid #1e3a50;
+  box-shadow:0 0 48px rgba(80,180,255,0.12)}
+.face.west,.face.east{top:0;width:var(--slab);height:100%;background:#1a1a1a;
+  display:flex;align-items:center;justify-content:center}
+.face.west{left:0;transform-origin:left center;transform:rotateY(90deg)}
+.face.east{right:0;transform-origin:right center;transform:rotateY(-90deg)}
+.edge-label{font-size:11px;letter-spacing:0.12em;text-transform:uppercase;color:var(--sel);
+  writing-mode:vertical-rl;transform:rotate(180deg);opacity:0;
+  transition:opacity 0.4s ease;white-space:nowrap}
+body.side .edge-label{opacity:1}
+
+.caption{position:absolute;left:12px;top:10px;z-index:2;
+  font-size:11px;letter-spacing:0.08em;text-transform:uppercase;color:var(--sel);
+  opacity:0;transition:opacity 0.4s ease;pointer-events:none;
+  text-shadow:0 0 8px #000}
+body.side .caption{opacity:1}
+
+.scroll{flex:1;overflow-x:hidden;overflow-y:auto;position:relative;min-height:0;overflow-anchor:none}
+.scroll>[id^="grid-"]{white-space:pre;padding:0 8px;position:relative;box-sizing:border-box;
+  font-size:14px;line-height:var(--cell-h)}
+.row{height:var(--cell-h)}
+.cell-probe{position:absolute;top:-9999px;left:-9999px;visibility:hidden;white-space:pre;
+  font-family:var(--term-font);font-size:14px;line-height:var(--cell-h)}
+.pane.unstuck .scroll{overflow-anchor:auto}
+.pane a{color:inherit;text-decoration:underline}
+
+.cursor{position:absolute;top:calc(var(--cursor-row)*var(--cell-h));left:calc(8px + var(--cursor-col)*1ch);
+  width:1ch;height:var(--cell-h);pointer-events:none;
+  background:var(--term-fg);box-shadow:none;mix-blend-mode:difference;
+  animation:cursor-blink 1s steps(2) infinite}
+@keyframes cursor-blink{50%{opacity:0.4}}
+.wc{display:inline-block;width:calc(var(--w)*1ch)}
+.sb{font-weight:bold}.si{font-style:italic}.su{text-decoration:underline}
+.sx{visibility:hidden}.ss{text-decoration:line-through}
+.f1{color:var(--c1)}.f2{color:var(--c2)}.f3{color:var(--c3)}.f4{color:var(--c4)}
+.f5{color:var(--c5)}.f6{color:var(--c6)}.f7{color:var(--c7)}
+.b1{background:var(--c1)}.b2{background:var(--c2)}.b3{background:var(--c3)}.b4{background:var(--c4)}
+.b5{background:var(--c5)}.b6{background:var(--c6)}.b7{background:var(--c7)}
+
+/* YZ plane: edge-on from the front, a light shaft once the stage yaws. */
+.shaft{position:absolute;left:50%;top:8%;height:84%;width:var(--depth);
+  margin-left:calc(var(--depth) / -2);
+  transform:translateZ(calc(var(--depth) / -2)) rotateY(90deg);
+  background:linear-gradient(90deg,
+    rgba(102,204,255,0.04) 0%,
+    rgba(102,204,255,0.16) 18%,
+    rgba(102,204,255,0.28) 82%,
+    rgba(102,204,255,0.08) 100%);
+  box-shadow:0 0 40px rgba(80,180,255,0.12);
+  pointer-events:none}
+
+#beam{position:absolute;inset:0;transform-style:preserve-3d;pointer-events:none;overflow:visible}
+.fly{position:absolute;left:50%;top:50%;white-space:nowrap;font:16px/1.2 var(--term-font);
+  pointer-events:none;will-change:transform,opacity;transform-origin:center center}
+.fly.html{color:#8cf;text-shadow:0 0 8px #4af}
+.fly.pkt{color:#fc8;text-shadow:0 0 8px #c80}
+
+.wez{position:absolute;left:50%;top:50%;width:280px;height:170px;margin:-85px 0 0 -140px;
+  transform:translateZ(calc(-1 * var(--depth)));transform-style:preserve-3d;pointer-events:none}
+.wez-front,.wez-west,.wez-east{position:absolute;inset:0;background:#151515;border:1px solid var(--sel);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px}
+.wez-front{transform:translateZ(40px);
+  box-shadow:0 0 28px rgba(102,204,255,0.35)}
+.wez-back{position:absolute;inset:0;background:#0c0c0c;border:1px solid #345;
+  transform:rotateY(180deg) translateZ(40px)}
+.wez-west{width:80px;left:0;right:auto;transform-origin:left center;transform:rotateY(-90deg)}
+.wez-east{width:80px;right:0;left:auto;transform-origin:right center;transform:rotateY(90deg)}
+.wez-lens{width:36px;height:36px;border-radius:50%;
+  background:radial-gradient(circle at 40% 35%, #eef, #6cf 34%, #1a8 68%, #012);
+  box-shadow:0 0 22px #6cf}
+.wez-name{font-size:16px;letter-spacing:0.12em;text-transform:uppercase;color:#fff}
+.wez-sub{font-size:11px;letter-spacing:0.16em;text-transform:uppercase;color:var(--dim)}
+
+#chrome{position:fixed;top:10px;right:12px;z-index:20;display:flex;align-items:center;gap:12px;
+  font:12px/1 var(--term-font);color:var(--dim)}
+#toggle{background:#1a1a1a;color:var(--term-fg);border:1px solid var(--border);font:inherit;
+  padding:5px 10px;cursor:pointer;letter-spacing:0.04em}
+#toggle:hover{border-color:var(--sel)}
+body.side #toggle{border-color:var(--sel);color:var(--sel)}
+#link{font-variant-numeric:tabular-nums}
+#link.offline{color:#d08770}

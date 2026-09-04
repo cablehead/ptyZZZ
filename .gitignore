@@ -7,3 +7,4 @@ node_modules
 /.claude/worktrees/
 /.claude/settings.local.json
 /panes-store
+/through-store
