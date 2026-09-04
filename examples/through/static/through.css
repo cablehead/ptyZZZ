@@ -30,7 +30,7 @@ body{background:#000;color:var(--term-fg);font:14px/1.2 var(--term-font);overflo
   transform-origin:50% 50% calc(var(--depth) / -2);
   transition:transform 1.15s cubic-bezier(0.4, 0, 0.2, 1)}
 body.side .orbit{transform:rotateX(6deg) rotateY(var(--yaw))}
-body.side .stage{transform:scale(0.64) translateX(-4%)}
+body.side .stage{transform:scale(0.64) translateX(-4%) translateY(18%)}
 
 .slab{position:absolute;inset:0;transform-style:preserve-3d}
 .face{position:absolute;background:var(--term-bg)}
