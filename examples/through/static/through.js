@@ -181,33 +181,32 @@ function snippetsFrom(muts) {
 }
 
 function spawnFlyer(text, kind) {
-  if (!side || !text) return;
+  if (!side || !beamReady || !text) return;
   while (beam.childElementCount > 28) beam.firstElementChild.remove();
   const el = document.createElement("div");
   el.className = "fly " + kind;
   el.textContent = text;
-  // Keep the string in the shaft: HTML hits the pane and extends back toward
-  // wezterm; POST hits wezterm and extends forward toward the pane.
+  // Origin at the leading edge so the string stays in the shaft, not through
+  // the pane. HTML arrives at the pane and extends back toward wezterm.
   el.style.transformOrigin = kind === "pkt" ? "left center" : "right center";
   beam.appendChild(el);
-  const nearX = (Math.random() - 0.5) * 20;
-  const nearY = (Math.random() - 0.5) * 70;
-  const farX = (Math.random() - 0.5) * 20;
-  const farY = (Math.random() - 0.5) * pane.clientHeight * 0.62;
-  // Stage yaws +Y, so -90 faces the tags toward the camera (YZ plane of the shaft).
+  const yWez = (Math.random() - 0.5) * 80;
+  const yPane = (Math.random() - 0.5) * pane.clientHeight * 0.5;
   const face = " rotateY(-90deg)";
+  const zWez = -(DEPTH - 50);
+  const zPane = -24;
   const from = kind === "pkt"
-    ? `translate(-50%,-50%) translate3d(${farX}px,${farY}px,-8px)` + face
-    : `translate(-50%,-50%) translate3d(${nearX}px,${nearY}px,${-DEPTH}px)` + face;
+    ? `translate(-50%,-50%) translate3d(0px,${yPane}px,${zPane}px)` + face
+    : `translate(-50%,-50%) translate3d(0px,${yWez}px,${zWez}px)` + face;
   const to = kind === "pkt"
-    ? `translate(-50%,-50%) translate3d(${nearX}px,${nearY}px,${-DEPTH}px)` + face
-    : `translate(-50%,-50%) translate3d(${farX}px,${farY}px,-8px)` + face;
+    ? `translate(-50%,-50%) translate3d(0px,${yWez}px,${zWez}px)` + face
+    : `translate(-50%,-50%) translate3d(0px,${yPane}px,${zPane}px)` + face;
   el.animate([
     {transform: from, opacity: 0},
-    {transform: from, opacity: 1, offset: 0.08},
-    {transform: to, opacity: 0.85, offset: 0.78},
-    {transform: to, opacity: 0.15}
-  ], {duration: kind === "pkt" ? 1100 : 1600, easing: "linear"}).finished
+    {transform: from, opacity: 1, offset: 0.06},
+    {transform: to, opacity: 0.9, offset: 0.82},
+    {transform: to, opacity: 0.12}
+  ], {duration: kind === "pkt" ? 2200 : 3200, easing: "linear"}).finished
     .then(() => el.remove())
     .catch(() => el.remove());
 }
@@ -227,15 +226,37 @@ function seedBeam() {
   for (const r of pick) spawnFlyer(snippetOf(r), "html");
 }
 
+const stage = document.querySelector(".stage");
+let beamReady = false;
+let beamWait = 0;
+
+function openBeam() {
+  if (!side || beamReady) return;
+  beamReady = true;
+  seedBeam();
+}
+
 function setSide(on) {
   side = !!on;
+  beamReady = false;
+  clearTimeout(beamWait);
   document.body.classList.toggle("side", side);
   toggle.setAttribute("aria-pressed", side ? "true" : "false");
   toggle.textContent = side ? "face on" : "see through";
-  if (!side) beam.replaceChildren();
-  else seedBeam();
+  beam.replaceChildren();
+  if (side) {
+    // Wait out the yaw. Spawning tags mid-turn makes them start on the front
+    // of the pane and loop behind as the parent rotates.
+    beamWait = setTimeout(openBeam, 1200);
+  }
   parkFocus();
 }
+
+stage.addEventListener("transitionend", ev => {
+  if (ev.target !== stage) return;
+  if (ev.propertyName && ev.propertyName !== "transform") return;
+  openBeam();
+});
 
 toggle.addEventListener("click", ev => {
   ev.preventDefault();

@@ -6,7 +6,7 @@
 :root{--term-font:"JetBrainsMonoNerd",monospace;--term-bg:#111;--term-fg:#ddd;
   --dim:#888;--sel:#6cf;--border:#444;
   --cell-h:17px;
-  --depth:560px;
+  --depth:2600px;
   --slab:12px;
   --c0:#000;--c1:#cd0000;--c2:#00cd00;--c3:#cdcd00;--c4:#1e90ff;--c5:#cd00cd;
   --c6:#00cdcd;--c7:#e5e5e5;--c8:#4d4d4d;--c9:#ff5454;--c10:#54ff54;--c11:#ffff54;
@@ -16,15 +16,14 @@
 html,body{height:100%;margin:0}
 body{background:#000;color:var(--term-fg);font:14px/1.2 var(--term-font);overflow:hidden}
 
-.scene{position:absolute;inset:0;perspective:1800px;perspective-origin:50% 50%}
+.scene{position:absolute;inset:0;perspective:2200px;perspective-origin:50% 50%}
 .stage{position:absolute;inset:0;transform-style:preserve-3d;
   transform:rotateY(0deg);
   transform-origin:50% 50% calc(var(--depth) / -2);
-  transition:transform 1s cubic-bezier(0.4, 0, 0.2, 1)}
-/* Pivot is the shaft midpoint, so the pane and wezterm swing apart instead
-   of the box staying hidden behind the plane. Yaw almost edge-on, with a
-   little pitch so the pane face still reads. */
-body.side .stage{transform:scale(0.6) rotateX(10deg) rotateY(66deg)}
+  transition:transform 1.15s cubic-bezier(0.4, 0, 0.2, 1)}
+/* Pivot at the shaft midpoint. Depth is large so wezterm sits far behind the
+   pane; scale down so that corridor still fits on screen. */
+body.side .stage{transform:scale(0.32) rotateX(8deg) rotateY(72deg)}
 
 .slab{position:absolute;inset:0;transform-style:preserve-3d}
 .face{position:absolute;background:var(--term-bg)}
@@ -88,7 +87,7 @@ body.side .caption{opacity:1}
 .fly.html{color:#8cf;text-shadow:0 0 8px #4af}
 .fly.pkt{color:#fc8;text-shadow:0 0 8px #c80}
 
-.wez{position:absolute;left:50%;top:50%;width:280px;height:170px;margin:-85px 0 0 -140px;
+.wez{position:absolute;left:50%;top:50%;width:360px;height:200px;margin:-100px 0 0 -180px;
   transform:translateZ(calc(-1 * var(--depth)));transform-style:preserve-3d;pointer-events:none}
 .wez-front,.wez-west,.wez-east{position:absolute;inset:0;background:#151515;border:1px solid var(--sel);
   display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px}
