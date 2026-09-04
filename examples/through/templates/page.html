@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <title>through</title>
   <script type="module" src="{{ datastar | safe }}"></script>
-  <link rel="stylesheet" href="/static/through.css?v=14">
+  <link rel="stylesheet" href="/static/through.css?v=15">
 </head>
 <body data-init="@get('/sse')">
   <div class="scene">
@@ -28,9 +28,9 @@
         <div class="wez">
           <div class="wez-front">
             <div class="wez-screen" aria-hidden="true"></div>
-            <div class="wez-name">wezterm</div>
           </div>
           <div class="wez-back" aria-hidden="true"></div>
+          <div class="wez-label">wezterm</div>
         </div>
       </div>
     </div>
@@ -47,6 +47,6 @@
       data-text="$_missed > 2 ? 'offline' : $_rtt + 'ms'"
     >--</span>
   </div>
-  <script type="module" src="/static/through.js?v=14"></script>
+  <script type="module" src="/static/through.js?v=15"></script>
 </body>
 </html>

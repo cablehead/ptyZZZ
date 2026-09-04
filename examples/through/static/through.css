@@ -103,18 +103,19 @@ body.side .lamp{opacity:1}
 .fly.html{color:#8cf;text-shadow:0 0 8px #4af}
 .fly.pkt{color:#fc8;text-shadow:0 0 8px #c80}
 
-.wez{position:absolute;left:50%;top:50%;width:420px;height:260px;margin:-130px 0 0 -210px;
+.wez{position:absolute;left:50%;top:50%;width:320px;height:200px;margin:-100px 0 0 -160px;
   transform:translateZ(calc(-1 * var(--depth)));transform-style:preserve-3d;pointer-events:none}
 .wez-front{position:absolute;inset:0;background:#111;border:1px solid var(--sel);
-  display:flex;flex-direction:column;transform:translateZ(6px);
-  backface-visibility:hidden;
+  transform:translateZ(6px);backface-visibility:hidden;
   box-shadow:0 0 28px rgba(102,204,255,0.25)}
 .wez-back{position:absolute;inset:0;background:#0c0c0c;border:1px solid #345;
   transform:rotateY(180deg) translateZ(6px);backface-visibility:hidden}
-.wez-screen{flex:1;min-height:0;overflow:hidden;position:relative;background:#0a0a0a}
+.wez-screen{position:absolute;inset:0;overflow:hidden;background:#0a0a0a}
 .wez-screen > *{position:absolute;top:0;left:0;transform-origin:top left;pointer-events:none}
-.wez-name{flex:none;font-size:12px;letter-spacing:0.14em;text-transform:uppercase;
-  color:var(--sel);padding:5px 8px;border-top:1px solid #234}
+.wez-label{position:absolute;left:0;right:0;top:100%;margin-top:10px;
+  text-align:center;font-size:14px;letter-spacing:0.16em;text-transform:uppercase;
+  color:var(--sel);transform:translateZ(6px);white-space:nowrap;pointer-events:none;
+  text-shadow:0 0 8px #000}
 
 #chrome{position:fixed;top:10px;right:12px;z-index:20;display:flex;align-items:center;gap:12px;
   font:12px/1 var(--term-font);color:var(--dim)}

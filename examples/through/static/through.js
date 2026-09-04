@@ -103,6 +103,7 @@ function fit() {
     lastFit = {cols, rows};
     send({t:"resize", cols, rows});
   }
+  sizeWez();
 }
 function scheduleFit() {
   clearTimeout(fitTimer);
@@ -227,9 +228,20 @@ function seedBeam() {
 
 const orbit = document.querySelector(".orbit");
 const stage = document.querySelector(".stage");
+const wezEl = document.querySelector(".wez");
 const wezScreen = document.querySelector(".wez-screen");
 let beamReady = false;
 let beamWait = 0;
+
+function sizeWez() {
+  if (!wezEl || !pane.clientWidth || !pane.clientHeight) return;
+  const h = 200;
+  const w = h * (pane.clientWidth / pane.clientHeight);
+  wezEl.style.width = w + "px";
+  wezEl.style.height = h + "px";
+  wezEl.style.margin = `${-h / 2}px 0 0 ${-w / 2}px`;
+  syncWezScreen();
+}
 
 function syncWezScreen() {
   const src = document.getElementById("grid-" + PANE);
