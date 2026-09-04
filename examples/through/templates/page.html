@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <title>through</title>
   <script type="module" src="{{ datastar | safe }}"></script>
-  <link rel="stylesheet" href="/static/through.css?v=12">
+  <link rel="stylesheet" href="/static/through.css?v=14">
 </head>
 <body data-init="@get('/sse')">
   <div class="scene">
@@ -18,6 +18,11 @@
           <div class="face west" aria-hidden="true"></div>
           <div class="face east" aria-hidden="true"></div>
           <div class="caption pane-cap">static HTML</div>
+        </div>
+        <div class="lamp" aria-hidden="true"></div>
+        <div class="light" aria-hidden="true">
+          <div class="light-v"></div>
+          <div class="light-h"></div>
         </div>
         <div id="beam" aria-hidden="true"></div>
         <div class="wez">

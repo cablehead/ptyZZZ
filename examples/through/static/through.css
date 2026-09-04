@@ -7,6 +7,7 @@
   --dim:#888;--sel:#6cf;--border:#444;
   --cell-h:17px;
   --depth:1500px;
+  --lamp:720px;
   --slab:12px;
   --c0:#000;--c1:#cd0000;--c2:#00cd00;--c3:#cdcd00;--c4:#1e90ff;--c5:#cd00cd;
   --c6:#00cdcd;--c7:#e5e5e5;--c8:#4d4d4d;--c9:#ff5454;--c10:#54ff54;--c11:#ffff54;
@@ -66,6 +67,35 @@ body.side .caption{opacity:1}
 .f5{color:var(--c5)}.f6{color:var(--c6)}.f7{color:var(--c7)}
 .b1{background:var(--c1)}.b2{background:var(--c2)}.b3{background:var(--c3)}.b4{background:var(--c4)}
 .b5{background:var(--c5)}.b6{background:var(--c6)}.b7{background:var(--c7)}
+
+/* Frustum: a point behind wezterm, through the wez-screen, opening to the pane.
+   Two crossing planes (YZ and XZ) so it reads as a volume, not a floating quad. */
+.light{position:absolute;inset:0;transform-style:preserve-3d;pointer-events:none;
+  opacity:0;transition:opacity 0.4s ease}
+body.side .light{opacity:1}
+.light-v,.light-h{position:absolute;pointer-events:none;
+  background:linear-gradient(90deg,
+    rgba(102,204,255,0.22) 0%,
+    rgba(102,204,255,0.10) 35%,
+    rgba(102,204,255,0.04) 100%)}
+.light-v{left:50%;top:0;height:100%;width:calc(var(--depth) + var(--lamp));
+  margin-left:calc((var(--depth) + var(--lamp)) / -2);
+  transform:translateZ(calc((var(--depth) + var(--lamp)) / -2)) rotateY(90deg);
+  clip-path:polygon(0% 49.4%, 100% 0%, 100% 100%, 0% 50.6%)}
+.light-h{left:0;top:50%;width:100%;height:calc(var(--depth) + var(--lamp));
+  margin-top:calc((var(--depth) + var(--lamp)) / -2);
+  transform:translateZ(calc((var(--depth) + var(--lamp)) / -2)) rotateX(-90deg);
+  background:linear-gradient(180deg,
+    rgba(102,204,255,0.22) 0%,
+    rgba(102,204,255,0.10) 35%,
+    rgba(102,204,255,0.04) 100%);
+  clip-path:polygon(0% 0%, 100% 0%, 50.6% 100%, 49.4% 100%)}
+.lamp{position:absolute;left:50%;top:50%;width:14px;height:14px;margin:-7px 0 0 -7px;
+  border-radius:50%;background:radial-gradient(circle, #def 0%, #6cf 40%, transparent 70%);
+  transform:translateZ(calc(-1 * (var(--depth) + var(--lamp))));
+  box-shadow:0 0 22px 8px rgba(102,204,255,0.45);pointer-events:none;
+  opacity:0;transition:opacity 0.4s ease}
+body.side .lamp{opacity:1}
 
 #beam{position:absolute;inset:0;transform-style:preserve-3d;pointer-events:none;overflow:visible}
 .fly{position:absolute;left:50%;top:50%;white-space:nowrap;font:28px/1.2 var(--term-font);
