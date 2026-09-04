@@ -186,21 +186,20 @@ function spawnFlyer(text, kind) {
   const el = document.createElement("div");
   el.className = "fly " + kind;
   el.textContent = text;
-  // Origin at the leading edge so the string stays in the shaft, not through
-  // the pane. HTML arrives at the pane and extends back toward wezterm.
-  el.style.transformOrigin = kind === "pkt" ? "left center" : "right center";
+  // Right edge is the 3D point. rotateY(-90) maps local +X to +Z (through the
+  // pane). Pinning the right edge keeps the whole string at z <= point, i.e.
+  // in the shaft. translate(-50%,-50%) used to center the chip on the pane
+  // so POSTs spawned on the camera side.
+  el.style.transformOrigin = "100% 50%";
   beam.appendChild(el);
   const yWez = (Math.random() - 0.5) * 80;
   const yPane = (Math.random() - 0.5) * pane.clientHeight * 0.5;
   const face = " rotateY(-90deg)";
   const zWez = -(DEPTH - 50);
-  const zPane = -24;
-  const from = kind === "pkt"
-    ? `translate(-50%,-50%) translate3d(0px,${yPane}px,${zPane}px)` + face
-    : `translate(-50%,-50%) translate3d(0px,${yWez}px,${zWez}px)` + face;
-  const to = kind === "pkt"
-    ? `translate(-50%,-50%) translate3d(0px,${yWez}px,${zWez}px)` + face
-    : `translate(-50%,-50%) translate3d(0px,${yPane}px,${zPane}px)` + face;
+  const zPane = -40;
+  const at = (y, z) => `translate(0,-50%) translate3d(0px,${y}px,${z}px)` + face;
+  const from = kind === "pkt" ? at(yPane, zPane) : at(yWez, zWez);
+  const to = kind === "pkt" ? at(yWez, zWez) : at(yPane, zPane);
   el.animate([
     {transform: from, opacity: 0},
     {transform: from, opacity: 1, offset: 0.06},
