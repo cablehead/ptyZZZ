@@ -19,8 +19,10 @@ dynamic multiplexer.
     static/panes.css
     static/panes.js
 
-Columns are 100ch, full height, panned horizontally. Split stacks another
-pane in the focused column.
+Columns are full height and share the strip width, down to a floor of 100ch
+each. One column fills the screen and two split it. Once a share would drop
+under 100ch the columns hold at 100ch and the strip pans horizontally. Split
+stacks another pane in the focused column.
 
 Zoom (`f`) maximizes the selected pane over the whole strip. It is per
 browser tab, not layout: nothing is stored server side, and it follows the

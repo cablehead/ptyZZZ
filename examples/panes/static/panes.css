@@ -19,7 +19,10 @@ body{background:#000;color:var(--term-fg);font:14px/1.2 var(--term-font);overflo
 
 #strip{flex:1;min-height:0;display:flex;flex-direction:row;overflow-x:auto;overflow-y:hidden;
   align-items:stretch;gap:0}
-.column{flex:0 0 100ch;width:100ch;min-width:100ch;max-width:100ch;
+/* Columns share the strip while each can keep 100ch. One column is the full
+   width, two split it. Past the point where a share would drop under 100ch
+   they stop shrinking and the strip pans horizontally, niri style. */
+.column{flex:1 0 100ch;min-width:100ch;
   display:flex;flex-direction:column;min-height:0;border-right:1px solid var(--border)}
 .pane{flex:1;display:flex;flex-direction:column;background:var(--term-bg);min-width:0;min-height:0}
 .pane + .pane{border-top:1px solid var(--border)}
