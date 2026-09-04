@@ -6,7 +6,7 @@
 :root{--term-font:"JetBrainsMonoNerd",monospace;--term-bg:#111;--term-fg:#ddd;
   --dim:#888;--sel:#6cf;--border:#444;
   --cell-h:17px;
-  --depth:2600px;
+  --depth:1500px;
   --slab:12px;
   --c0:#000;--c1:#cd0000;--c2:#00cd00;--c3:#cdcd00;--c4:#1e90ff;--c5:#cd00cd;
   --c6:#00cdcd;--c7:#e5e5e5;--c8:#4d4d4d;--c9:#ff5454;--c10:#54ff54;--c11:#ffff54;
@@ -16,14 +16,14 @@
 html,body{height:100%;margin:0}
 body{background:#000;color:var(--term-fg);font:14px/1.2 var(--term-font);overflow:hidden}
 
-.scene{position:absolute;inset:0;perspective:2200px;perspective-origin:50% 50%}
+.scene{position:absolute;inset:0;perspective:1800px;perspective-origin:50% 50%}
 .stage{position:absolute;inset:0;transform-style:preserve-3d;
   transform:rotateY(0deg);
   transform-origin:50% 50% calc(var(--depth) / -2);
   transition:transform 1.15s cubic-bezier(0.4, 0, 0.2, 1)}
-/* Pivot at the shaft midpoint. Depth is large so wezterm sits far behind the
-   pane; scale down so that corridor still fits on screen. */
-body.side .stage{transform:scale(0.32) rotateX(8deg) rotateY(72deg)}
+/* Land on the mid-turn pose: pane still a readable screen, wezterm a labeled
+   box, a long shaft between them. 72deg / 0.32 made the pane an edge. */
+body.side .stage{transform:scale(0.72) rotateX(8deg) rotateY(40deg)}
 
 .slab{position:absolute;inset:0;transform-style:preserve-3d}
 .face{position:absolute;background:var(--term-bg)}
@@ -70,7 +70,7 @@ body.side .caption{opacity:1}
 .b5{background:var(--c5)}.b6{background:var(--c6)}.b7{background:var(--c7)}
 
 /* YZ plane: edge-on from the front, a light shaft once the stage yaws. */
-.shaft{position:absolute;left:50%;top:8%;height:84%;width:var(--depth);
+.shaft{position:absolute;left:50%;top:0;height:100%;width:var(--depth);
   margin-left:calc(var(--depth) / -2);
   transform:translateZ(calc(var(--depth) / -2)) rotateY(90deg);
   background:linear-gradient(90deg,
@@ -82,7 +82,7 @@ body.side .caption{opacity:1}
   pointer-events:none}
 
 #beam{position:absolute;inset:0;transform-style:preserve-3d;pointer-events:none;overflow:visible}
-.fly{position:absolute;left:50%;top:50%;white-space:nowrap;font:16px/1.2 var(--term-font);
+.fly{position:absolute;left:50%;top:50%;white-space:nowrap;font:28px/1.2 var(--term-font);
   pointer-events:none;will-change:transform,opacity;transform-origin:center center}
 .fly.html{color:#8cf;text-shadow:0 0 8px #4af}
 .fly.pkt{color:#fc8;text-shadow:0 0 8px #c80}
