@@ -3,6 +3,7 @@ const NAMED = ["ArrowUp","ArrowDown","ArrowLeft","ArrowRight","Home","End",
   "PageUp","PageDown","Insert","Delete","Enter","Tab","Backspace","Escape"];
 const NOFIT = new URLSearchParams(location.search).has("nofit");
 const DEPTH = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--depth")) || 420;
+const LAMP = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--lamp")) || 420;
 
 function keyEvent(ev) {
   if (["Shift","Control","Alt","Meta","CapsLock"].includes(ev.key)) return null;
@@ -187,25 +188,29 @@ function spawnFlyer(text, kind) {
   const el = document.createElement("div");
   el.className = "fly " + kind;
   el.textContent = text;
-  // Right edge is the 3D point. rotateY(-90) maps local +X to +Z (through the
-  // pane). Pinning the right edge keeps the whole string at z <= point, i.e.
-  // in the shaft. translate(-50%,-50%) used to center the chip on the pane
-  // so POSTs spawned on the camera side.
+  // Strings lie along the beam (local +X -> +Z). Origin is the pane-facing
+  // end so the chip stays in the shaft. X is biased west of centerline:
+  // after the scene was centered, the pane silhouette covers the axis.
   el.style.transformOrigin = "100% 50%";
   beam.appendChild(el);
-  const yWez = (Math.random() - 0.5) * 80;
-  const yPane = (Math.random() - 0.5) * pane.clientHeight * 0.5;
-  const face = " rotateY(-90deg)";
+  const w = pane.clientWidth;
+  const lamp = DEPTH + LAMP;
   const zWez = -(DEPTH - 50);
-  const zPane = -40;
-  const at = (y, z) => `translate(0,-50%) translate3d(0px,${y}px,${z}px)` + face;
-  const from = kind === "pkt" ? at(yPane, zPane) : at(yWez, zWez);
-  const to = kind === "pkt" ? at(yWez, zWez) : at(yPane, zPane);
+  const zPane = -140;
+  const westAt = (z) => -0.72 * (w / 2) * (1 - Math.abs(z) / lamp);
+  const yWez = (Math.random() - 0.5) * 56;
+  const yPane = (Math.random() - 0.5) * pane.clientHeight * 0.42;
+  const xWez = westAt(zWez) + (Math.random() - 0.5) * 16;
+  const xPane = westAt(zPane) + (Math.random() - 0.5) * 24;
+  const face = " rotateY(-90deg)";
+  const at = (x, y, z) => `translate(0,-50%) translate3d(${x}px,${y}px,${z}px)` + face;
+  const from = kind === "pkt" ? at(xPane, yPane, zPane) : at(xWez, yWez, zWez);
+  const to = kind === "pkt" ? at(xWez, yWez, zWez) : at(xPane, yPane, zPane);
   el.animate([
     {transform: from, opacity: 0},
     {transform: from, opacity: 1, offset: 0.06},
-    {transform: to, opacity: 0.9, offset: 0.82},
-    {transform: to, opacity: 0.12}
+    {transform: to, opacity: 0.95, offset: 0.82},
+    {transform: to, opacity: 0.15}
   ], {duration: kind === "pkt" ? 1100 : 1600, easing: "linear"}).finished
     .then(() => el.remove())
     .catch(() => el.remove());

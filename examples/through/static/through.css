@@ -98,8 +98,8 @@ body.side .lamp{opacity:1}
 #beam{position:absolute;inset:0;transform-style:preserve-3d;pointer-events:none;overflow:visible}
 .fly{position:absolute;left:50%;top:50%;white-space:nowrap;font:28px/1.2 var(--term-font);
   pointer-events:none;will-change:transform,opacity;transform-origin:center center}
-.fly.html{color:#8cf;text-shadow:0 0 8px #4af}
-.fly.pkt{color:#fc8;text-shadow:0 0 8px #c80}
+.fly.html{color:#8cf;text-shadow:0 0 8px #4af, 0 0 2px #000}
+.fly.pkt{color:#fc8;text-shadow:0 0 8px #c80, 0 0 2px #000}
 
 .wez{position:absolute;inset:0;width:auto;height:auto;margin:0;
   transform:translateZ(calc(-1 * var(--depth))) scale(var(--wez-scale));
