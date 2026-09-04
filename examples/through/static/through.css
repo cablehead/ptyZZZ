@@ -9,6 +9,8 @@
   --depth:1500px;
   --lamp:420px;
   --beam-len:calc(var(--depth) + var(--lamp));
+  --wez-scale:0.22;
+  --yaw:38deg;
   --slab:12px;
   --c0:#000;--c1:#cd0000;--c2:#00cd00;--c3:#cdcd00;--c4:#1e90ff;--c5:#cd00cd;
   --c6:#00cdcd;--c7:#e5e5e5;--c8:#4d4d4d;--c9:#ff5454;--c10:#54ff54;--c11:#ffff54;
@@ -27,7 +29,7 @@ body{background:#000;color:var(--term-fg);font:14px/1.2 var(--term-font);overflo
 .stage{position:absolute;inset:0;transform-style:preserve-3d;
   transform-origin:50% 50% calc(var(--depth) / -2);
   transition:transform 1.15s cubic-bezier(0.4, 0, 0.2, 1)}
-body.side .orbit{transform:rotateX(6deg) rotateY(38deg)}
+body.side .orbit{transform:rotateX(6deg) rotateY(var(--yaw))}
 body.side .stage{transform:scale(0.64) translateX(-4%)}
 
 .slab{position:absolute;inset:0;transform-style:preserve-3d}
@@ -100,7 +102,7 @@ body.side .lamp{opacity:1}
 .fly.pkt{color:#fc8;text-shadow:0 0 8px #c80}
 
 .wez{position:absolute;inset:0;width:auto;height:auto;margin:0;
-  transform:translateZ(calc(-1 * var(--depth))) scale(0.22);
+  transform:translateZ(calc(-1 * var(--depth))) scale(var(--wez-scale));
   transform-origin:center center;transform-style:preserve-3d;pointer-events:none}
 .wez-front{position:absolute;inset:0;background:#111;border:1px solid var(--sel);
   transform:translateZ(6px);backface-visibility:hidden;
@@ -109,10 +111,13 @@ body.side .lamp{opacity:1}
   transform:rotateY(180deg) translateZ(6px);backface-visibility:hidden}
 .wez-screen{position:absolute;inset:0;overflow:hidden;background:#0a0a0a}
 .wez-screen > *{position:absolute;top:0;left:0;transform-origin:top left;pointer-events:none}
-.wez-label{position:absolute;left:0;right:0;top:100%;margin-top:10px;
-  text-align:center;font-size:14px;letter-spacing:0.16em;text-transform:uppercase;
-  color:var(--sel);transform:translateZ(6px);white-space:nowrap;pointer-events:none;
-  text-shadow:0 0 8px #000}
+.wez-label{position:absolute;left:50%;top:50%;
+  font-size:22px;letter-spacing:0.16em;text-transform:uppercase;color:var(--sel);
+  white-space:nowrap;pointer-events:none;text-shadow:0 0 8px #000;
+  opacity:0;transition:opacity 0.4s ease;
+  transform:translate(-50%, calc(50vh * var(--wez-scale) + 16px))
+    translateZ(calc(-1 * var(--depth))) rotateY(calc(-1 * var(--yaw)))}
+body.side .wez-label{opacity:1}
 
 #chrome{position:fixed;top:10px;right:12px;z-index:20;display:flex;align-items:center;gap:12px;
   font:12px/1 var(--term-font);color:var(--dim)}
