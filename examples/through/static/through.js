@@ -146,13 +146,13 @@ function snippetOf(n) {
   if (!n) return null;
   if (n.nodeType !== 1) {
     const t = (n.textContent || "").replace(/\s+/g, " ").trim();
-    return t ? t.slice(0, 48) : null;
+    return t ? t.slice(0, 28) : null;
   }
-  const open = (n.outerHTML || "").match(/^<[^>]+>/);
-  const text = (n.textContent || "").replace(/\s+/g, " ").trim().slice(0, 22);
-  if (!open) return text || null;
-  const s = text ? `${open[0]}${text}` : open[0];
-  return s.length > 48 ? s.slice(0, 45) + "..." : s;
+  const tag = n.tagName.toLowerCase();
+  const cls = typeof n.className === "string" ? n.className.trim().split(/\s+/)[0] : "";
+  const text = (n.textContent || "").replace(/\s+/g, " ").trim().slice(0, 18);
+  const open = cls ? `<${tag} class="${cls}">` : `<${tag}>`;
+  return text ? `${open}${text}` : open;
 }
 function snippetsFrom(muts) {
   const out = [];
@@ -226,14 +226,38 @@ function seedBeam() {
   for (const r of pick) spawnFlyer(snippetOf(r), "html");
 }
 
+const orbit = document.querySelector(".orbit");
 const stage = document.querySelector(".stage");
+const wezScreen = document.querySelector(".wez-screen");
 let beamReady = false;
 let beamWait = 0;
+
+function syncWezScreen() {
+  const src = document.getElementById("grid-" + PANE);
+  if (!src || !wezScreen) return;
+  const clone = src.cloneNode(true);
+  clone.removeAttribute("id");
+  for (const el of clone.querySelectorAll("[id]")) el.removeAttribute("id");
+  wezScreen.replaceChildren(clone);
+  const iw = Math.max(clone.scrollWidth, clone.offsetWidth, 1);
+  const dw = wezScreen.clientWidth;
+  if (!dw) return;
+  const s = dw / iw;
+  clone.style.transformOrigin = "top left";
+  clone.style.transform = `scale(${s})`;
+  // Match the pane viewport, not the clone's layout bottom (blank pty rows).
+  clone.style.top = (-(scrollEl.scrollTop) * s) + "px";
+}
 
 function openBeam() {
   if (!side || beamReady) return;
   beamReady = true;
   seedBeam();
+}
+
+function finishTurn() {
+  toggle.textContent = side ? "face on" : "see through";
+  openBeam();
 }
 
 function setSide(on) {
@@ -242,21 +266,18 @@ function setSide(on) {
   clearTimeout(beamWait);
   document.body.classList.toggle("side", side);
   toggle.setAttribute("aria-pressed", side ? "true" : "false");
-  toggle.textContent = side ? "face on" : "see through";
   beam.replaceChildren();
-  if (side) {
-    // Wait out the yaw. Spawning tags mid-turn makes them start on the front
-    // of the pane and loop behind as the parent rotates.
-    beamWait = setTimeout(openBeam, 1200);
-  }
+  // Wait out the yaw both ways so the button matches the picture.
+  beamWait = setTimeout(finishTurn, 1200);
   parkFocus();
 }
 
-stage.addEventListener("transitionend", ev => {
-  if (ev.target !== stage) return;
+function onTurnEnd(ev) {
   if (ev.propertyName && ev.propertyName !== "transform") return;
-  openBeam();
-});
+  finishTurn();
+}
+orbit.addEventListener("transitionend", onTurnEnd);
+stage.addEventListener("transitionend", onTurnEnd);
 
 toggle.addEventListener("click", ev => {
   ev.preventDefault();
@@ -265,6 +286,7 @@ toggle.addEventListener("click", ev => {
 
 new MutationObserver(muts => {
   if (stickOn) toBottom();
+  syncWezScreen();
   if (side) {
     for (const s of snippetsFrom(muts)) spawnFlyer(s, "html");
   }
@@ -314,4 +336,5 @@ document.addEventListener("keydown", ev => {
 }, {capture: true});
 
 fit();
+syncWezScreen();
 parkFocus();

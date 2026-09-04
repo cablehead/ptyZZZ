@@ -17,18 +17,21 @@ html,body{height:100%;margin:0}
 body{background:#000;color:var(--term-fg);font:14px/1.2 var(--term-font);overflow:hidden}
 
 .scene{position:absolute;inset:0;perspective:1800px;perspective-origin:50% 50%}
-.stage{position:absolute;inset:0;transform-style:preserve-3d;
-  transform:rotateY(0deg);
+/* Scale and rotate live on different nodes so Chromium does not paint the
+   grid twice while the preserve-3d matrix is in flight. */
+.orbit{position:absolute;inset:0;transform-style:preserve-3d;
   transform-origin:50% 50% calc(var(--depth) / -2);
   transition:transform 1.15s cubic-bezier(0.4, 0, 0.2, 1)}
-/* Land on the mid-turn pose: pane still a readable screen, wezterm a labeled
-   box, a long shaft between them. 72deg / 0.32 made the pane an edge. */
-body.side .stage{transform:scale(0.72) rotateX(8deg) rotateY(40deg)}
+.stage{position:absolute;inset:0;transform-style:preserve-3d;
+  transform-origin:50% 50% calc(var(--depth) / -2);
+  transition:transform 1.15s cubic-bezier(0.4, 0, 0.2, 1)}
+body.side .orbit{transform:rotateX(6deg) rotateY(38deg)}
+body.side .stage{transform:scale(0.64) translateX(-4%)}
 
 .slab{position:absolute;inset:0;transform-style:preserve-3d}
 .face{position:absolute;background:var(--term-bg)}
 .face.front{inset:0;transform:translateZ(calc(var(--slab) / 2));
-  display:flex;flex-direction:column;overflow:hidden;backface-visibility:hidden}
+  display:flex;flex-direction:column;overflow:hidden}
 .face.back{inset:0;transform:rotateY(180deg) translateZ(calc(var(--slab) / 2));
   background:#0a0a0a;border:1px solid #1e3a50;
   box-shadow:0 0 48px rgba(80,180,255,0.12)}
@@ -36,13 +39,8 @@ body.side .stage{transform:scale(0.72) rotateX(8deg) rotateY(40deg)}
   display:flex;align-items:center;justify-content:center}
 .face.west{left:0;transform-origin:left center;transform:rotateY(90deg)}
 .face.east{right:0;transform-origin:right center;transform:rotateY(-90deg)}
-.edge-label{font-size:11px;letter-spacing:0.12em;text-transform:uppercase;color:var(--sel);
-  writing-mode:vertical-rl;transform:rotate(180deg);opacity:0;
-  transition:opacity 0.4s ease;white-space:nowrap}
-body.side .edge-label{opacity:1}
-
 .caption{position:absolute;left:12px;top:10px;z-index:2;
-  font-size:11px;letter-spacing:0.08em;text-transform:uppercase;color:var(--sel);
+  font-size:13px;letter-spacing:0.1em;text-transform:uppercase;color:var(--sel);
   opacity:0;transition:opacity 0.4s ease;pointer-events:none;
   text-shadow:0 0 8px #000}
 body.side .caption{opacity:1}
@@ -74,11 +72,10 @@ body.side .caption{opacity:1}
   margin-left:calc(var(--depth) / -2);
   transform:translateZ(calc(var(--depth) / -2)) rotateY(90deg);
   background:linear-gradient(90deg,
-    rgba(102,204,255,0.04) 0%,
-    rgba(102,204,255,0.16) 18%,
-    rgba(102,204,255,0.28) 82%,
-    rgba(102,204,255,0.08) 100%);
-  box-shadow:0 0 40px rgba(80,180,255,0.12);
+    rgba(102,204,255,0.05) 0%,
+    rgba(102,204,255,0.14) 22%,
+    rgba(102,204,255,0.26) 100%);
+  clip-path:polygon(0 28%, 100% 0, 100% 100%, 0 72%);
   pointer-events:none}
 
 #beam{position:absolute;inset:0;transform-style:preserve-3d;pointer-events:none;overflow:visible}
@@ -87,19 +84,18 @@ body.side .caption{opacity:1}
 .fly.html{color:#8cf;text-shadow:0 0 8px #4af}
 .fly.pkt{color:#fc8;text-shadow:0 0 8px #c80}
 
-.wez{position:absolute;left:50%;top:50%;width:360px;height:200px;margin:-100px 0 0 -180px;
+.wez{position:absolute;left:50%;top:50%;width:420px;height:260px;margin:-130px 0 0 -210px;
   transform:translateZ(calc(-1 * var(--depth)));transform-style:preserve-3d;pointer-events:none}
-.wez-front{position:absolute;inset:0;background:#151515;border:1px solid var(--sel);
-  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;
-  transform:translateZ(6px);
-  box-shadow:0 0 28px rgba(102,204,255,0.35)}
+.wez-front{position:absolute;inset:0;background:#111;border:1px solid var(--sel);
+  display:flex;flex-direction:column;transform:translateZ(6px);
+  backface-visibility:hidden;
+  box-shadow:0 0 28px rgba(102,204,255,0.25)}
 .wez-back{position:absolute;inset:0;background:#0c0c0c;border:1px solid #345;
-  transform:rotateY(180deg) translateZ(6px)}
-.wez-lens{width:36px;height:36px;border-radius:50%;
-  background:radial-gradient(circle at 40% 35%, #eef, #6cf 34%, #1a8 68%, #012);
-  box-shadow:0 0 22px #6cf}
-.wez-name{font-size:16px;letter-spacing:0.12em;text-transform:uppercase;color:#fff}
-.wez-sub{font-size:11px;letter-spacing:0.16em;text-transform:uppercase;color:var(--dim)}
+  transform:rotateY(180deg) translateZ(6px);backface-visibility:hidden}
+.wez-screen{flex:1;min-height:0;overflow:hidden;position:relative;background:#0a0a0a}
+.wez-screen > *{position:absolute;top:0;left:0;transform-origin:top left;pointer-events:none}
+.wez-name{flex:none;font-size:12px;letter-spacing:0.14em;text-transform:uppercase;
+  color:var(--sel);padding:5px 8px;border-top:1px solid #234}
 
 #chrome{position:fixed;top:10px;right:12px;z-index:20;display:flex;align-items:center;gap:12px;
   font:12px/1 var(--term-font);color:var(--dim)}

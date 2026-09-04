@@ -4,29 +4,30 @@
   <meta charset="utf-8">
   <title>through</title>
   <script type="module" src="{{ datastar | safe }}"></script>
-  <link rel="stylesheet" href="/static/through.css?v=9">
+  <link rel="stylesheet" href="/static/through.css?v=11">
 </head>
 <body data-init="@get('/sse')">
   <div class="scene">
-    <div class="stage">
-      <div class="slab pane" data-pane="p1">
-        <div class="face front">
-          <div class="scroll"><div id="grid-p1">connecting...</div></div>
+    <div class="orbit">
+      <div class="stage">
+        <div class="slab pane" data-pane="p1">
+          <div class="face front">
+            <div class="scroll"><div id="grid-p1">connecting...</div></div>
+          </div>
+          <div class="face back" aria-hidden="true"></div>
+          <div class="face west" aria-hidden="true"></div>
+          <div class="face east" aria-hidden="true"></div>
+          <div class="caption pane-cap">static HTML</div>
         </div>
-        <div class="face back" aria-hidden="true"></div>
-        <div class="face west" aria-hidden="true"><span class="edge-label">static HTML</span></div>
-        <div class="face east" aria-hidden="true"><span class="edge-label">static HTML</span></div>
-        <div class="caption pane-cap">static HTML</div>
-      </div>
-      <div class="shaft" aria-hidden="true"></div>
-      <div id="beam" aria-hidden="true"></div>
-      <div class="wez">
-        <div class="wez-front">
-          <div class="wez-lens"></div>
-          <div class="wez-name">wezterm</div>
-          <div class="wez-sub">headless</div>
+        <div class="shaft" aria-hidden="true"></div>
+        <div id="beam" aria-hidden="true"></div>
+        <div class="wez">
+          <div class="wez-front">
+            <div class="wez-screen" aria-hidden="true"></div>
+            <div class="wez-name">wezterm</div>
+          </div>
+          <div class="wez-back" aria-hidden="true"></div>
         </div>
-        <div class="wez-back" aria-hidden="true"></div>
       </div>
     </div>
   </div>
@@ -42,6 +43,6 @@
       data-text="$_missed > 2 ? 'offline' : $_rtt + 'ms'"
     >--</span>
   </div>
-  <script type="module" src="/static/through.js?v=8"></script>
+  <script type="module" src="/static/through.js?v=12"></script>
 </body>
 </html>
