@@ -1,13 +1,15 @@
-@font-face{font-family:"JetBrainsMonoNerd";font-weight:normal;font-style:normal;font-display:swap;
-  src:url("/fonts/JetBrainsMonoNLNerdFontMono-Regular.woff2") format("woff2")}
-@font-face{font-family:"JetBrainsMonoNerd";font-weight:bold;font-style:normal;font-display:swap;
-  src:url("/fonts/JetBrainsMonoNLNerdFontMono-Bold.woff2") format("woff2")}
+@font-face{font-family:"AdwaitaMonoNerd";font-weight:normal;font-style:normal;font-display:swap;
+  src:url("/fonts/AdwaitaMonoNerdFontMono-Regular.woff2") format("woff2")}
+@font-face{font-family:"AdwaitaMonoNerd";font-weight:bold;font-style:normal;font-display:swap;
+  src:url("/fonts/AdwaitaMonoNerdFontMono-Bold.woff2") format("woff2")}
 
-:root{--term-font:"JetBrainsMonoNerd",monospace;--term-bg:#111;--term-fg:#ddd;
+:root{--term-font:"AdwaitaMonoNerd",monospace;--term-bg:#111;--term-fg:#ddd;
   --chrome:#1a1a1a;--dim:#888;--sel:#6cf;--sel-blur:#234;--border:#444;--status-h:22px;
   /* Integer row height: a fractional (em-based) line-height leaves a sub-pixel
-     sliver clipped at the top once a pane is scrolled to the bottom. */
-  --cell-h:17px;
+     sliver clipped at the top once a pane is scrolled to the bottom. 18px is
+     what Adwaita Mono asks for (ascent+descent = 1.25em at 14px); anything
+     less overlaps consecutive rows by the difference. */
+  --cell-h:18px;
   --c0:#000;--c1:#cd0000;--c2:#00cd00;--c3:#cdcd00;--c4:#1e90ff;--c5:#cd00cd;
   --c6:#00cdcd;--c7:#e5e5e5;--c8:#4d4d4d;--c9:#ff5454;--c10:#54ff54;--c11:#ffff54;
   --c12:#5454ff;--c13:#ff54ff;--c14:#54ffff;--c15:#fff;}

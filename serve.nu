@@ -116,19 +116,21 @@ const TMPL = r#'<!doctype html>
 <html><head><meta charset=utf-8>
 <script type=module src=DATASTAR></script>
 <style>
-  /* Vendored JetBrains Mono NL Nerd Font (Mono variant: single-width
-     icons, no ligatures). A complete monospace face with box-drawing,
-     block, powerline, and Nerd Font icon glyphs all at uniform advance,
-     so grid geometry never depends on the OS fallback font. */
-  @font-face{font-family:"JetBrainsMonoNerd";font-weight:normal;font-style:normal;font-display:swap;
-    src:url("/fonts/JetBrainsMonoNLNerdFontMono-Regular.woff2") format("woff2")}
-  @font-face{font-family:"JetBrainsMonoNerd";font-weight:bold;font-style:normal;font-display:swap;
-    src:url("/fonts/JetBrainsMonoNLNerdFontMono-Bold.woff2") format("woff2")}
-  :root{--term-font:"JetBrainsMonoNerd",monospace;--term-bg:#111;--term-fg:#ddd;
+  /* Vendored Adwaita Mono Nerd Font (Mono variant: single-width icons).
+     A complete monospace face with box-drawing, block, braille, powerline
+     and Nerd Font icon glyphs all at uniform advance, so grid geometry
+     never depends on the OS fallback font. Both weights are declared: with
+     only a regular face WebKit fakes bold by widening every advance, which
+     pushes a row with bold in it several cells wide. */
+  @font-face{font-family:"AdwaitaMonoNerd";font-weight:normal;font-style:normal;font-display:swap;
+    src:url("/fonts/AdwaitaMonoNerdFontMono-Regular.woff2") format("woff2")}
+  @font-face{font-family:"AdwaitaMonoNerd";font-weight:bold;font-style:normal;font-display:swap;
+    src:url("/fonts/AdwaitaMonoNerdFontMono-Bold.woff2") format("woff2")}
+  :root{--term-font:"AdwaitaMonoNerd",monospace;--term-bg:#111;--term-fg:#ddd;
     --c0:#000;--c1:#cd0000;--c2:#00cd00;--c3:#cdcd00;--c4:#1e90ff;--c5:#cd00cd;
     --c6:#00cdcd;--c7:#e5e5e5;--c8:#4d4d4d;--c9:#ff5454;--c10:#54ff54;--c11:#ffff54;
     --c12:#5454ff;--c13:#ff54ff;--c14:#54ffff;--c15:#fff;}
-  body{background:#000;color:var(--term-fg);margin:0;font:14px/1.2 var(--term-font);overflow:hidden}
+  body{background:#000;color:var(--term-fg);margin:0;font:14px/18px var(--term-font);overflow:hidden}
   #panes{display:flex;height:100vh}
   #panes.stacked{flex-direction:column}
   /* min-width/height:0: flex items otherwise refuse to shrink below their

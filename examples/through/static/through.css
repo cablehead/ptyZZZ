@@ -1,11 +1,14 @@
-@font-face{font-family:"JetBrainsMonoNerd";font-weight:normal;font-style:normal;font-display:swap;
-  src:url("/fonts/JetBrainsMonoNLNerdFontMono-Regular.woff2") format("woff2")}
-@font-face{font-family:"JetBrainsMonoNerd";font-weight:bold;font-style:normal;font-display:swap;
-  src:url("/fonts/JetBrainsMonoNLNerdFontMono-Bold.woff2") format("woff2")}
+@font-face{font-family:"AdwaitaMonoNerd";font-weight:normal;font-style:normal;font-display:swap;
+  src:url("/fonts/AdwaitaMonoNerdFontMono-Regular.woff2") format("woff2")}
+@font-face{font-family:"AdwaitaMonoNerd";font-weight:bold;font-style:normal;font-display:swap;
+  src:url("/fonts/AdwaitaMonoNerdFontMono-Bold.woff2") format("woff2")}
 
-:root{--term-font:"JetBrainsMonoNerd",monospace;--term-bg:#111;--term-fg:#ddd;
+:root{--term-font:"AdwaitaMonoNerd",monospace;--term-bg:#111;--term-fg:#ddd;
   --dim:#888;--sel:#6cf;--border:#444;
-  --cell-h:17px;
+  /* Match the face: Adwaita Mono wants ascent+descent = 1.25em, which is 18px
+     at 14px. A smaller pitch makes consecutive rows overlap by the difference,
+     invisible on black but a seam under a selection. */
+  --cell-h:18px;
   --depth:1500px;
   --lamp:420px;
   --beam-len:calc(var(--depth) + var(--lamp));
