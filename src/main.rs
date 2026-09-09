@@ -305,6 +305,9 @@ fn main() {
     let done = Arc::new(AtomicBool::new(false));
     // set by a {t:screen} command, consumed by the emitter's next pass
     let want_keyframe = Arc::new(AtomicBool::new(false));
+    // set by the reader while the pty stream sits between DECSET 2026 and its
+    // reset, so the emitter can decline to publish a half-written frame
+    let in_sync = Arc::new(AtomicBool::new(false));
     let master = Arc::new(Mutex::new(pair.master));
 
     // reader: drain pty -> feed wezterm -> bump dirty.
@@ -312,9 +315,11 @@ fn main() {
         let term = term.clone();
         let dirty = dirty.clone();
         let done = done.clone();
+        let in_sync = in_sync.clone();
         let mut record = record.map(|p| std::fs::File::create(p).expect("record file"));
         std::thread::spawn(move || {
             let mut buf = [0u8; 4096];
+            let mut scan = SyncScan::default();
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
@@ -322,13 +327,25 @@ fn main() {
                         if let Some(f) = record.as_mut() {
                             let _ = f.write_all(&buf[..n]);
                         }
+                        // Enter before the bytes land and leave after, so the
+                        // flag is never clear while the terminal holds a
+                        // partial frame.
+                        let mark = scan.feed(&buf[..n]);
+                        if mark == Some(true) {
+                            in_sync.store(true, Ordering::SeqCst);
+                        }
                         term.lock().unwrap().advance_bytes(&buf[..n]);
+                        if mark == Some(false) {
+                            in_sync.store(false, Ordering::SeqCst);
+                        }
                         bump(&dirty);
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                     Err(_) => break,
                 }
             }
+            // A program that dies mid-update must not leave the gate shut.
+            in_sync.store(false, Ordering::SeqCst);
             done.store(true, Ordering::SeqCst);
             bump(&dirty);
         });
@@ -433,6 +450,11 @@ fn main() {
     // goes from ~0.4ms to ~1.4ms, still an order of magnitude inside the window
     // leading-edge pacing was introduced to save.
     const SETTLE: Duration = Duration::from_millis(1);
+    // Ceiling on how long a synchronized update may hold frames back. Long
+    // enough for a full-screen truecolor repaint over a pty, short enough that
+    // a program that never closes the pair costs one dropped frame, not the
+    // stream.
+    const SYNC_MAX: Duration = Duration::from_millis(150);
     let mut last_frame_at = Instant::now().checked_sub(coalesce).unwrap_or_else(Instant::now);
     loop {
         {
@@ -469,6 +491,26 @@ fn main() {
             std::thread::sleep(gate.max(SETTLE.min(coalesce)));
             let (lock, _) = &*dirty;
             last_gen = *lock.lock().unwrap();
+            // Synchronized output: the program has said it is mid-frame, so
+            // hold until it says otherwise. This is what stops a 141KB frame
+            // being published after the rows it has cleared and before the
+            // rows it is about to paint. Bounded, because a program that dies
+            // inside an update, or one that opens the pair and never closes
+            // it, must not stop output for good.
+            if in_sync.load(Ordering::SeqCst) {
+                let deadline = Instant::now() + SYNC_MAX;
+                let (lock, cv) = &*dirty;
+                let mut g = lock.lock().unwrap();
+                while in_sync.load(Ordering::SeqCst) && !done.load(Ordering::SeqCst) {
+                    let left = deadline.saturating_duration_since(Instant::now());
+                    if left.is_zero() {
+                        break;
+                    }
+                    let (ng, _) = cv.wait_timeout(g, left).unwrap();
+                    g = ng;
+                }
+                last_gen = *g;
+            }
         }
 
         let keyframe_due = want_keyframe.swap(false, Ordering::SeqCst)
@@ -1099,9 +1141,100 @@ fn render_row_into(
 }
 
 
+
+/// DECSET/DECRST 2026: synchronized output. A program that wraps a frame in
+/// this pair is asking not to be rendered while the frame is half-written.
+/// wezterm-term parses both and drops them ("handled in wezterm's mux"), so
+/// the state is not on the Terminal to read -- we track it off the raw bytes.
+const BSU: &[u8] = b"\x1b[?2026h";
+const ESU: &[u8] = b"\x1b[?2026l";
+
+/// Watches the pty byte stream for the synchronized-update pair. Fed each
+/// chunk in read order.
+///
+/// A marker can straddle two reads, so the tail of every chunk is carried
+/// into the next scan. The carry is one byte shorter than a marker, so no
+/// whole marker can sit inside it and be counted twice.
+#[derive(Default)]
+struct SyncScan {
+    carry: Vec<u8>,
+}
+
+impl SyncScan {
+    /// The state this chunk leaves the stream in, or None if it holds no
+    /// marker. The last marker wins: a chunk that closes one update and opens
+    /// the next leaves us inside the new one, which costs at most the frame
+    /// that closed, never a torn one.
+    fn feed(&mut self, chunk: &[u8]) -> Option<bool> {
+        const LEN: usize = BSU.len();
+        let mut buf = std::mem::take(&mut self.carry);
+        buf.extend_from_slice(chunk);
+        let mut state = None;
+        for w in buf.windows(LEN) {
+            if w == BSU {
+                state = Some(true);
+            } else if w == ESU {
+                state = Some(false);
+            }
+        }
+        let keep = buf.len().min(LEN - 1);
+        self.carry = buf[buf.len() - keep..].to_vec();
+        state
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The pty hands us 4096 bytes at a time with no regard for where an
+    /// escape sequence ends, so a marker routinely straddles two reads. The
+    /// scanner has to carry the tail of each chunk to see it.
+    #[test]
+    fn a_marker_split_across_two_reads_still_registers() {
+        let mut scan = SyncScan::default();
+        assert_eq!(scan.feed(b"rows\x1b[?20"), None, "no whole marker yet");
+        assert_eq!(scan.feed(b"26hmore rows"), Some(true), "the halves join up");
+        assert_eq!(scan.feed(b"\x1b[?2026"), None, "closing marker still short");
+        assert_eq!(scan.feed(b"l"), Some(false), "one byte finishes it");
+    }
+
+    /// Carrying the tail must not let the same marker count twice: the carry
+    /// is a byte shorter than a marker, so a marker that ends flush with a
+    /// chunk boundary cannot be rediscovered in the next scan.
+    #[test]
+    fn a_marker_flush_with_the_chunk_end_is_not_counted_twice() {
+        let mut scan = SyncScan::default();
+        assert_eq!(scan.feed(b"\x1b[?2026h"), Some(true), "marker ends the chunk");
+        assert_eq!(scan.feed(b"plain text"), None, "not seen a second time");
+    }
+
+    /// Both markers in one chunk means a frame closed and the next opened
+    /// between two reads. Ending inside the new update is the safe answer: it
+    /// costs the frame that closed, where the other way round publishes a
+    /// frame that is half old and half new.
+    #[test]
+    fn the_last_marker_in_a_chunk_decides() {
+        let mut scan = SyncScan::default();
+        assert_eq!(
+            scan.feed(b"\x1b[?2026lclosed\x1b[?2026hopened"),
+            Some(true),
+            "chunk ends inside the new update"
+        );
+        assert_eq!(
+            scan.feed(b"painting\x1b[?2026l"),
+            Some(false),
+            "and leaves it when the close arrives"
+        );
+    }
+
+    /// A stream that never uses 2026 must never trip the gate, or every
+    /// program that does not opt in pays for the ones that do.
+    #[test]
+    fn a_stream_without_the_pair_never_reports_a_state() {
+        let mut scan = SyncScan::default();
+        assert_eq!(scan.feed(b"\x1b[H\x1b[2Jhello\r\n"), None);
+        assert_eq!(scan.feed(b"\x1b[?25l\x1b[?1049h"), None, "other modes are not it");
+    }
 
     /// A terminal wired up the way `main` does, minus the pty.
     fn term(rows: usize, cols: usize) -> Terminal {
