@@ -105,11 +105,16 @@ if ($HTTP_NU.store? | default null) != null and ($HTTP_NU.services? | default fa
     let runcmd = if $it.item.kind == "term" { "nu" } else if $it.item.kind == "aqua" { $AQUA } else { $"PLAYBIN ($it.item.style) 1000000" }
     let duplex = if $it.item.kind == "term" { "true" } else { "false" }
     let scrollback = if $it.item.kind == "term" { "3000" } else { "0" }
+    # Only the term face is duplex, so only its stdin has a writer. A non-duplex
+    # service leaves stdin at EOF, and the default "exit" reads that as an orphaned
+    # supervisor and kills the animation before it draws a frame. Those faces take
+    # PR_SET_PDEATHSIG instead, so they still die with the thread that spawned them.
+    let lifetime = if $it.item.kind == "term" { "--on-stdin-eof exit" } else { "--on-stdin-eof ignore --die-with-parent" }
     let cols = ($it.item.cols? | default 78)
     let rows = ($it.item.rows? | default 39)
     let closure = "{
   run: {||
-    ^PTYBIN run --cols COLS --rows ROWS --scrollback SCROLLBACK --target 'grid-IDX' -- RUNCMD
+    ^PTYBIN run --cols COLS --rows ROWS --scrollback SCROLLBACK LIFETIME --target 'grid-IDX' -- RUNCMD
     | lines | each {|l|
         let e = try { $l | from json } catch { null }
         if $e == null { return }
@@ -128,6 +133,7 @@ if ($HTTP_NU.store? | default null) != null and ($HTTP_NU.services? | default fa
       | str replace --all "PLAYBIN" $PLAYSTYLE
       | str replace --all "DUPLEX" $duplex
       | str replace --all "SCROLLBACK" $scrollback
+      | str replace --all "LIFETIME" $lifetime
       | str replace --all "COLS" ($cols | into string)
       | str replace --all "ROWS" ($rows | into string)
       | str replace --all "IDX" ($it.index | into string))
