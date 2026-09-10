@@ -25,7 +25,7 @@ addEventListener('resize', () => { fits.forEach(w => { delete w.dataset.key; fit
 
 // Version + wheel counter shown in the metrics panel, so a stale cached copy
 // of this file is visible at a glance.
-const VERSION = 8;
+const VERSION = 9;
 let wheelCount = 0;
 
 // The scrollback face follows the tail like a terminal. Follow breaks on
@@ -72,8 +72,9 @@ if (scrollFace) {
 // 1s window, measured at the point of truth for client cost -- what this
 // browser actually morphs. fps counts mutation batches (~= patch events, so a
 // diff frame's patch+append+remove counts as up to 3); kb sums added/changed
-// node bytes.
-const stats = fits.map(() => ({frames: 0, bytes: 0}));
+// node bytes; MB is that face's running total since load, which is what says
+// where a long session's cost actually went.
+const stats = fits.map(() => ({frames: 0, bytes: 0, total: 0}));
 fits.forEach((w, i) => {
   new MutationObserver(muts => {
     stats[i].frames++;
@@ -84,14 +85,44 @@ fits.forEach((w, i) => {
     }
   }).observe(w, {childList: true, subtree: true, characterData: true, attributes: true});
 });
-const FACE_NAMES = ['nu', 'chladni', 'matrix', 'aqua', 'mandel', 'aqua'];
+
+// A browser exposes no CPU counter, so the main thread's own cadence stands in
+// for one: a thread that is busy cannot service requestAnimationFrame on time.
+// p95 is the number to watch -- it moves while the mean still looks fine.
+// Long tasks report blocking time directly where the API exists (not Safari),
+// so it is additive detail, not the measurement.
+let rafGaps = [], rafPrev = performance.now(), blockedMs = 0, haveLongTask = false;
+(function rafTick(now) {
+  rafGaps.push(now - rafPrev);
+  rafPrev = now;
+  requestAnimationFrame(rafTick);
+})(rafPrev);
+try {
+  new PerformanceObserver(l => { for (const e of l.getEntries()) blockedMs += e.duration; })
+    .observe({type: 'longtask', buffered: true});
+  haveLongTask = true;
+} catch (e) { /* no longtask support; the rAF percentiles carry it alone */ }
+
+const FACE_NAMES = ['nu', 'chladni', 'matrix', 'aqua', 'mandel', 'boids'];
 const mline = document.getElementById('metrics');
+const pctl = (sorted, p) =>
+  sorted.length ? Math.round(sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))]) : 0;
+const kb = n => String((n / 1024).toFixed(0)).padStart(5);
+const mb = n => String((n / 1048576).toFixed(1)).padStart(7);
 setInterval(() => {
-  mline.textContent = [`v${VERSION}  wheel ${wheelCount}`]
-    .concat(stats.map((s, i) =>
-      `${i} ${(FACE_NAMES[i] || '?').padEnd(7)} ${String(s.frames).padStart(3)}/s ${String((s.bytes / 1024).toFixed(0)).padStart(4)}kb`))
-    .join('\n');
+  const rows = stats.map((s, i) => {
+    s.total += s.bytes;
+    return `${i} ${(FACE_NAMES[i] || '?').padEnd(7)} ${String(s.frames).padStart(3)}/s ${kb(s.bytes)}kb ${mb(s.total)}MB`;
+  });
+  rows.push(`tot       ${String(stats.reduce((a, s) => a + s.frames, 0)).padStart(3)}/s `
+    + `${kb(stats.reduce((a, s) => a + s.bytes, 0))}kb ${mb(stats.reduce((a, s) => a + s.total, 0))}MB`);
+  const g = rafGaps.slice().sort((a, b) => a - b);
+  rows.push(`cpu  ${String(g.length).padStart(3)}fps  p50 ${pctl(g, .5)}ms  p95 ${pctl(g, .95)}ms`
+    + (haveLongTask ? `  busy ${Math.round(blockedMs)}ms` : ''));
+  mline.textContent = [`v${VERSION}  wheel ${wheelCount}`].concat(rows).join('\n');
   stats.forEach(s => { s.frames = 0; s.bytes = 0; });
+  rafGaps = [];
+  blockedMs = 0;
 }, 1000);
 
 // Keystrokes -> the interactive (front) face. POST /input appends a pty0.send
