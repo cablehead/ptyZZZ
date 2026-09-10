@@ -128,6 +128,7 @@ Both directions are newline-delimited JSON, one object per line. Commands in:
 
 ```
 {"t":"input","b":"ls\n"}              raw bytes for the pty
+{"t":"mouse","kind":"press","button":"left","x":12,"y":4,"mods":0}
 {"t":"resize","cols":80,"rows":24}
 {"t":"screen"}                        emit a keyframe now
 ```

@@ -126,6 +126,37 @@ function measureCell() {
   return cellCache;
 }
 
+function mouseGrabbed(pane) {
+  return pane?.querySelector(".cursor")?.dataset.mouseGrabbed === "true";
+}
+function mouseMods(ev) {
+  return (ev.shiftKey?1:0)|(ev.altKey?2:0)|(ev.ctrlKey?4:0)|(ev.metaKey?8:0);
+}
+function mousePoint(pane, ev) {
+  const grid = pane?.querySelector('.scroll > [id^="grid-"]');
+  if (!grid) return null;
+  const rows = [...grid.querySelectorAll(":scope > .row")];
+  const visible = Math.min(Number(grid.dataset.rows) || 0, rows.length);
+  const live = rows.slice(rows.length - visible);
+  if (!live.length) return null;
+  let y = live.indexOf(ev.target.closest?.(".row"));
+  if (y < 0) y = live.findIndex(row => {
+    const r = row.getBoundingClientRect();
+    return ev.clientY >= r.top && ev.clientY < r.bottom;
+  });
+  if (y < 0) return null;
+  const r = live[y].getBoundingClientRect();
+  const cols = Number(grid.dataset.cols) || 1;
+  if (!r.width || ev.clientX < r.left || ev.clientX >= r.right) return null;
+  const exactX = (ev.clientX - r.left) * cols / r.width;
+  const x = Math.max(0, Math.min(cols - 1, Math.floor(exactX)));
+  return {
+    x, y,
+    x_pixel_offset: Math.max(0, Math.floor((exactX - x) * r.width / cols)),
+    y_pixel_offset: Math.max(0, Math.floor(ev.clientY - r.top)),
+  };
+}
+
 const lastFit = {};
 function fit() {
   if (NOFIT) return;
@@ -338,6 +369,56 @@ document.addEventListener("click", e => {
 document.getElementById("mode-badge").addEventListener("click", () => {
   setMode(mode === "focus" ? "navigate" : "focus");
   if (mode === "focus" && selected) parkFocus();
+});
+
+const mouseButtons = ["left", "middle", "right"];
+let activeMouse = null;
+let lastMouseMove = "";
+strip.addEventListener("mousedown", ev => {
+  const pane = ev.target.closest(".pane");
+  if (!pane || mode !== "focus" || ev.shiftKey || !mouseGrabbed(pane)) return;
+  const point = mousePoint(pane, ev);
+  const button = mouseButtons[ev.button];
+  if (!point || !button) return;
+  activeMouse = {pane, name: pane.dataset.pane, button, point};
+  send(activeMouse.name, {t:"mouse", kind:"press", button, ...point, mods:mouseMods(ev)});
+  ev.preventDefault();
+});
+document.addEventListener("mouseup", ev => {
+  if (!activeMouse) return;
+  const {pane, name, button} = activeMouse;
+  const point = mousePoint(pane, ev) || activeMouse.point;
+  send(name, {t:"mouse", kind:"release", button, ...point, mods:mouseMods(ev)});
+  activeMouse = null;
+  ev.preventDefault();
+}, {capture:true});
+strip.addEventListener("mousemove", ev => {
+  const pane = activeMouse?.pane || ev.target.closest(".pane");
+  if (!pane || mode !== "focus" || ev.shiftKey || !mouseGrabbed(pane)) return;
+  const point = mousePoint(pane, ev);
+  if (!point) return;
+  if (activeMouse) activeMouse.point = point;
+  const name = pane.dataset.pane;
+  const key = `${name}:${point.x}:${point.y}:${mouseMods(ev)}`;
+  if (key === lastMouseMove) return;
+  lastMouseMove = key;
+  send(name, {t:"mouse", kind:"move", ...point, mods:mouseMods(ev)});
+});
+strip.addEventListener("wheel", ev => {
+  const pane = ev.target.closest(".pane");
+  if (!pane || mode !== "focus" || ev.shiftKey || !mouseGrabbed(pane)) return;
+  const point = mousePoint(pane, ev);
+  if (!point) return;
+  const vertical = Math.abs(ev.deltaY) >= Math.abs(ev.deltaX);
+  const button = vertical
+    ? (ev.deltaY < 0 ? "wheelup" : "wheeldown")
+    : (ev.deltaX < 0 ? "wheelleft" : "wheelright");
+  send(pane.dataset.pane, {t:"mouse", kind:"press", button, ...point, mods:mouseMods(ev)});
+  ev.preventDefault();
+}, {passive:false});
+strip.addEventListener("contextmenu", ev => {
+  const pane = ev.target.closest(".pane");
+  if (pane && mode === "focus" && !ev.shiftKey && mouseGrabbed(pane)) ev.preventDefault();
 });
 
 // An unpinned pane relies on scroll anchoring to hold the line under the
