@@ -85,6 +85,10 @@ enum Sub {
         /// event protocol can miss
         #[arg(long)]
         die_with_parent: bool,
+        /// intern true-colour cells behind palette classes instead of inline
+        /// style attributes, and ship one stylesheet per face
+        #[arg(long)]
+        palette: bool,
         /// command to run (default: $SHELL or nu). Everything after `--`.
         #[arg(trailing_var_arg = true)]
         cmd: Vec<String>,
@@ -245,6 +249,7 @@ fn main() {
         scrollback,
         record,
         on_stdin_eof,
+        palette,
         die_with_parent,
         cmd,
     } = Args::parse().sub;
@@ -433,7 +438,7 @@ fn main() {
 
     // emitter: wait on dirty (or an owed keyframe), coalesce, emit frames.
     let out = std::io::stdout();
-    let mut state = EmitState::new(target);
+    let mut state = EmitState::new(target, palette);
     let mut last_gen = u64::MAX; // != 0 so the first pass emits immediately
     // Leading-edge pacing: a frame's production may start no sooner than
     // `coalesce` after the previous frame's production started. After idle
@@ -585,10 +590,12 @@ struct EmitState {
     dirty_since_keyframe: bool,
     /// seqno of the last implicit-hyperlink scan
     scan_seqno: usize,
+    /// Some when --palette is on; interns true-colour declarations.
+    palette: Option<Palette>,
 }
 
 impl EmitState {
-    fn new(target: String) -> Self {
+    fn new(target: String, use_palette: bool) -> Self {
         Self {
             target,
             cache: BTreeMap::new(),
@@ -605,6 +612,7 @@ impl EmitState {
             last_keyframe: Instant::now(),
             dirty_since_keyframe: false,
             scan_seqno: 0,
+            palette: use_palette.then(Palette::default),
         }
     }
 
@@ -720,13 +728,14 @@ impl EmitState {
         // cache byte-for-byte was touched but not visibly changed (a prompt
         // redraw writing identical cells); drop it from the diff.
         let mut changed: Vec<StableRowIndex> = Vec::new();
+        let mut pal = self.palette.take();
         if forced {
             self.cache.clear();
             let lines = screen.lines_in_phys_range(0..total);
             for (i, line) in lines.iter().enumerate() {
                 let stable = base + i as StableRowIndex;
                 let mut html = String::with_capacity(64);
-                render_row_into(&mut html, &self.target, line, cols, stable);
+                render_row_into(&mut html, &self.target, line, cols, stable, pal.as_mut());
                 self.cache.insert(stable, html);
             }
         } else {
@@ -735,7 +744,7 @@ impl EmitState {
                 let phys = (stable - base) as usize;
                 let line = &screen.lines_in_phys_range(phys..phys + 1)[0];
                 let mut html = String::with_capacity(64);
-                render_row_into(&mut html, &self.target, line, cols, stable);
+                render_row_into(&mut html, &self.target, line, cols, stable, pal.as_mut());
                 let fresh = self.cache.get(&stable) != Some(&html);
                 if fresh {
                     self.cache.insert(stable, html);
@@ -745,6 +754,8 @@ impl EmitState {
                 }
             }
         }
+
+        self.palette = pal;
 
         if !forced
             && !keyframe_due
@@ -768,6 +779,9 @@ impl EmitState {
                 "<div id=\"{}\" data-cols=\"{cols}\" data-rows=\"{rows}\">",
                 self.target
             );
+            if let Some(p) = self.palette.as_ref() {
+                p.sheet_into(&mut html, &self.target);
+            }
             render_cursor_into(&mut html, &self.target, cursor_now.0, cursor_now.1, cursor_now.2);
             for row in self.cache.values() {
                 html.push_str(row);
@@ -778,6 +792,9 @@ impl EmitState {
             serde_json::json!({"t":"screen","seqno":seqno,"cols":cols,"rows":rows,"html":html})
         } else {
             let mut patch = String::new();
+            if self.palette.as_ref().is_some_and(|p| p.grew) {
+                self.palette.as_ref().unwrap().sheet_into(&mut patch, &self.target);
+            }
             for stable in &changed {
                 patch.push_str(&self.cache[stable]);
             }
@@ -799,6 +816,7 @@ impl EmitState {
             })
         };
 
+        if let Some(p) = self.palette.as_mut() { p.grew = false; }
         self.last_seqno = seqno;
         self.emitted_seqno = seqno;
         self.last_base = base;
@@ -981,6 +999,42 @@ fn append_color_inline(out: &mut String, prop: &str, c: ColorAttribute, default_
     }
 }
 
+/// True-colour cells fall through `cell_class_and_style` to an inline `style`
+/// attribute of about forty characters, which is what morph has to diff per
+/// span. Interning each distinct declaration behind a class swaps that for a
+/// short, stable token and moves the colours into one stylesheet per face.
+///
+/// Indices must be stable across frames, or every span's class churns and the
+/// morph has nothing to short-circuit on. So the map only ever grows, and the
+/// sheet is re-sent only on the frames that added to it.
+#[derive(Default)]
+struct Palette {
+    idx: std::collections::HashMap<String, u32>,
+    decls: Vec<String>,
+    grew: bool,
+}
+
+impl Palette {
+    fn intern(&mut self, decl: &str) -> u32 {
+        if let Some(&n) = self.idx.get(decl) {
+            return n;
+        }
+        let n = self.decls.len() as u32;
+        self.decls.push(decl.to_string());
+        self.idx.insert(decl.to_string(), n);
+        self.grew = true;
+        n
+    }
+
+    fn sheet_into(&self, out: &mut String, target: &str) {
+        let _ = write!(out, "<style id=\"{target}-pal\">");
+        for (n, d) in self.decls.iter().enumerate() {
+            let _ = write!(out, ".p{n}{{{d}}}");
+        }
+        out.push_str("</style>");
+    }
+}
+
 fn cell_class_and_style(attrs: &CellAttributes) -> (String, String) {
     let mut classes = String::new();
     let mut style = String::new();
@@ -1051,6 +1105,7 @@ fn render_row_into(
     line: &Line,
     cols: usize,
     stable: StableRowIndex,
+    mut palette: Option<&mut Palette>,
 ) {
     let _ = write!(out, "<div class=\"row\" id=\"{target}-r-{stable}\">");
     let default = CellAttributes::default();
@@ -1103,7 +1158,14 @@ fn render_row_into(
                 .is_some_and(|(ra, rh)| attrs_equiv(ra, attrs) && *rh == href);
             if !same {
                 close(out, &mut open, &mut run);
-                let (classes, style) = cell_class_and_style(attrs);
+                let (mut classes, mut style) = cell_class_and_style(attrs);
+                if !style.is_empty() {
+                    if let Some(p) = palette.as_mut() {
+                        let n = p.intern(&style);
+                        let _ = write!(classes, " p{n}");
+                        style.clear();
+                    }
+                }
                 if href.is_none() && classes.is_empty() && style.is_empty() {
                     // visually default (e.g. only non-rendered bits set)
                 } else {
@@ -1258,7 +1320,7 @@ mod tests {
     #[test]
     fn diff_base_chains_to_the_previous_frame() {
         let mut t = term(24, 80);
-        let mut st = EmitState::new("grid".to_string());
+        let mut st = EmitState::new("grid".to_string(), false);
 
         t.advance_bytes(b"first\r\n");
         let opening = st.produce(&mut t, false).expect("first output emits a frame");
@@ -1286,7 +1348,7 @@ mod tests {
     #[test]
     fn a_requested_keyframe_emits_with_nothing_dirty() {
         let mut t = term(24, 80);
-        let mut st = EmitState::new("grid".to_string());
+        let mut st = EmitState::new("grid".to_string(), false);
         t.advance_bytes(b"hello\r\n");
         let held = seqno(&st.produce(&mut t, false).expect("opening keyframe"));
         assert!(st.produce(&mut t, false).is_none(), "idle pane emits nothing");
@@ -1307,7 +1369,7 @@ mod tests {
     #[test]
     fn keyframe_carries_no_base() {
         let mut t = term(24, 80);
-        let mut st = EmitState::new("grid".to_string());
+        let mut st = EmitState::new("grid".to_string(), false);
         t.advance_bytes(b"hello\r\n");
         let f = st.produce(&mut t, false).expect("emits a frame");
         assert_eq!(f["t"], "screen");
@@ -1323,7 +1385,7 @@ mod tests {
     #[test]
     fn a_no_op_produce_does_not_advance_base() {
         let mut t = term(24, 80);
-        let mut st = EmitState::new("grid".to_string());
+        let mut st = EmitState::new("grid".to_string(), false);
 
         t.advance_bytes(b"hello");
         let held = seqno(&st.produce(&mut t, false).expect("keyframe"));
@@ -1350,7 +1412,7 @@ mod tests {
     #[test]
     fn a_missed_frame_breaks_the_chain() {
         let mut t = term(24, 80);
-        let mut st = EmitState::new("grid".to_string());
+        let mut st = EmitState::new("grid".to_string(), false);
         t.advance_bytes(b"first\r\n");
         let held = seqno(&st.produce(&mut t, false).expect("keyframe"));
 
