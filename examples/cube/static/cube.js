@@ -25,7 +25,7 @@ addEventListener('resize', () => { fits.forEach(w => { delete w.dataset.key; fit
 
 // Version + wheel counter shown in the metrics panel, so a stale cached copy
 // of this file is visible at a glance.
-const VERSION = 7;
+const VERSION = 8;
 let wheelCount = 0;
 
 // The scrollback face follows the tail like a terminal. Follow breaks on
@@ -84,12 +84,12 @@ fits.forEach((w, i) => {
     }
   }).observe(w, {childList: true, subtree: true, characterData: true, attributes: true});
 });
-const FACE_NAMES = ['nu', 'boids', 'mandel', 'aqua', 'mandel', 'aqua'];
+const FACE_NAMES = ['nu', 'chladni', 'matrix', 'aqua', 'mandel', 'aqua'];
 const mline = document.getElementById('metrics');
 setInterval(() => {
   mline.textContent = [`v${VERSION}  wheel ${wheelCount}`]
     .concat(stats.map((s, i) =>
-      `${i} ${(FACE_NAMES[i] || '?').padEnd(6)} ${String(s.frames).padStart(3)}/s ${String((s.bytes / 1024).toFixed(0)).padStart(4)}kb`))
+      `${i} ${(FACE_NAMES[i] || '?').padEnd(7)} ${String(s.frames).padStart(3)}/s ${String((s.bytes / 1024).toFixed(0)).padStart(4)}kb`))
     .join('\n');
   stats.forEach(s => { s.frames = 0; s.bytes = 0; });
 }, 1000);

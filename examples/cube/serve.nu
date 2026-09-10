@@ -11,8 +11,8 @@
 #
 # Faces:
 #   0 front  nu (interactive)   3 left    asciiquarium
-#   1 right  boids_predator     4 top     mandelbrot
-#   2 back   mandelbrot         5 bottom  asciiquarium
+#   1 right  chladni            4 top     mandelbrot
+#   2 back   matrix             5 bottom  asciiquarium
 #
 # Face 0 is a real terminal: its service is duplex, so keystrokes POSTed to
 # /input (appended to pty0.send) are fed to that ptyZZZ's stdin as JSONL input.
@@ -61,8 +61,8 @@ let AQUA = (anim-bin "asciiquarium")
 # term face is bigger so TUIs fit -- btop needs >=80 cols; 84x42 keeps 2:1.
 const FACES = [
   {kind: "term", cols: 84, rows: 42}
-  {kind: "anim", style: "boids_predator"}
-  {kind: "anim", style: "mandelbrot"}
+  {kind: "anim", style: "chladni"}
+  {kind: "anim", style: "matrix"}
   {kind: "aqua"}
   {kind: "anim", style: "mandelbrot"}
   {kind: "aqua"}
