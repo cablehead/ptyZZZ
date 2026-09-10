@@ -37,7 +37,7 @@ Add `--tls <pem>` to serve https. Then open the page and type into the front
 
     0 front  nu (interactive)   3 left    asciiquarium
     1 right  chladni            4 top     mandelbrot
-    2 back   matrix             5 bottom  boids_schools
+    2 back   matrix             5 bottom  friends_and_enemies
 
 Face layout is data: edit the `FACES` list in `serve.nu` to rearrange, resize, or
 swap what each face runs.

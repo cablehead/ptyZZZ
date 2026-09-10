@@ -25,7 +25,7 @@ addEventListener('resize', () => { fits.forEach(w => { delete w.dataset.key; fit
 
 // Version + wheel counter shown in the metrics panel, so a stale cached copy
 // of this file is visible at a glance.
-const VERSION = 9;
+const VERSION = 10;
 let wheelCount = 0;
 
 // The scrollback face follows the tail like a terminal. Follow breaks on
@@ -103,7 +103,7 @@ try {
   haveLongTask = true;
 } catch (e) { /* no longtask support; the rAF percentiles carry it alone */ }
 
-const FACE_NAMES = ['nu', 'chladni', 'matrix', 'aqua', 'mandel', 'boids'];
+const FACE_NAMES = ['nu', 'chladni', 'matrix', 'aqua', 'mandel', 'friends'];
 const mline = document.getElementById('metrics');
 const pctl = (sorted, p) =>
   sorted.length ? Math.round(sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))]) : 0;

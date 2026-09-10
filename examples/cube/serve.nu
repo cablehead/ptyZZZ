@@ -12,7 +12,7 @@
 # Faces:
 #   0 front  nu (interactive)   3 left    asciiquarium
 #   1 right  chladni            4 top     mandelbrot
-#   2 back   matrix             5 bottom  boids_schools
+#   2 back   matrix             5 bottom  friends_and_enemies
 #
 # Face 0 is a real terminal: its service is duplex, so keystrokes POSTed to
 # /input (appended to pty0.send) are fed to that ptyZZZ's stdin as JSONL input.
@@ -65,7 +65,7 @@ const FACES = [
   {kind: "anim", style: "matrix"}
   {kind: "aqua"}
   {kind: "anim", style: "mandelbrot"}
-  {kind: "anim", style: "boids_schools"}
+  {kind: "anim", style: "friends_and_enemies"}
 ]
 
 # Fail loudly at load if a face binary is missing, rather than serving a dead
