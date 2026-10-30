@@ -16,8 +16,8 @@
 //   </pty-term>
 //
 // The element owns everything else one pane needs: keys and composed text,
-// paste, the send queue to /input, fitting the pty to its box, and pinning
-// the view to the live output. The page owns the stream and the layout. Keys
+// paste, mouse and focus reports, the send queue to /input, fitting the pty
+// to its box, and pinning the view to the live output. The page owns the stream and the layout. Keys
 // reach a pane through the browser's focus: the pane listens on itself, so
 // whichever pane holds focus gets what is typed.
 //
@@ -116,16 +116,25 @@ rocket("pty-term", {
     // server in press order by construction. While one is in flight the
     // backlog accumulates and drains as a single NDJSON batch, capping the
     // added delay at one round trip.
+    // Mouse moves coalesce: only the newest waits for the next drain, and it
+    // joins the queue ahead of any later frame so presses keep their order.
     const queue = [];
     let sending = false;
+    let pendingMove = null;
     const send = (frame) => {
+      if (pendingMove) { queue.push(JSON.stringify(pendingMove)); pendingMove = null; }
       queue.push(JSON.stringify(frame));
+      drain();
+    };
+    const sendMove = (frame) => {
+      pendingMove = frame;
       drain();
     };
     const drain = async () => {
       if (sending) return;
       sending = true;
-      while (queue.length) {
+      while (queue.length || pendingMove) {
+        if (pendingMove) { queue.push(JSON.stringify(pendingMove)); pendingMove = null; }
         const batch = queue.splice(0).join("\n") + "\n";
         try {
           await fetch("/input?pane=" + encodeURIComponent(props.pane), { method: "POST", body: batch });
@@ -210,6 +219,137 @@ rocket("pty-term", {
       ev.preventDefault();
       send({ t: "paste", s: text });
     });
+
+    // Focus reports: the emulator answers CSI I / CSI O only if the app
+    // turned on ?1004h. Focus moving between parts of the pane is not a change.
+    // A press on the grid drops focus to the body until the click handler
+    // parks it again, so during a press the verdict waits for the click.
+    let focused = null;
+    let pressing = false;
+    const sendFocus = (on) => {
+      if (on === focused) return;
+      focused = on;
+      send({ t: "focus", on });
+    };
+    host.addEventListener("focusin", () => sendFocus(true));
+    host.addEventListener("focusout", (ev) => {
+      if (!pressing && !host.contains(ev.relatedTarget)) sendFocus(false);
+    });
+    host.addEventListener("pointerdown", () => { pressing = true; }, true);
+    const settle = () => {
+      if (!pressing) return;
+      pressing = false;
+      // After the click, which runs in the same task as the pointerup.
+      setTimeout(() => sendFocus(document.hasFocus() && host.contains(document.activeElement)));
+    };
+    addEventListener("pointerup", settle, true);
+    addEventListener("pointercancel", settle, true);
+    cleanup(() => {
+      removeEventListener("pointerup", settle, true);
+      removeEventListener("pointercancel", settle, true);
+    });
+
+    // Mouse: the pane captures it only while the app has grabbed it (the
+    // cursor's data-mouse-grabbed), and never with Shift held, which keeps
+    // native text selection and scrollback. See PROTOCOL.md {t:mouse}.
+    const grabbed = () => box.querySelector(".cursor")?.dataset.mouseGrabbed === "true";
+    const mods = (ev) => (ev.shiftKey ? 1 : 0) | (ev.altKey ? 2 : 0) | (ev.ctrlKey ? 4 : 0) | (ev.metaKey ? 8 : 0);
+    // The cell under the pointer, in visible-screen coordinates: the last
+    // data-rows rows of the grid are the screen, the rest is scrollback.
+    // Clamped to the screen, so a captured drag past the edge still lands.
+    const cellAt = (ev) => {
+      const g = grid();
+      const cell = g && measureCell(g);
+      if (!cell) return null;
+      const cols = Number(g.dataset.cols) || 1;
+      const rows = g.querySelectorAll(":scope > .row");
+      const visible = Math.min(Number(g.dataset.rows) || 0, rows.length);
+      if (!visible) return null;
+      const top = rows[rows.length - visible].getBoundingClientRect();
+      const h = top.height || cell.h;
+      const fx = (ev.clientX - top.left) / cell.w;
+      const fy = (ev.clientY - top.top) / h;
+      const x = Math.max(0, Math.min(cols - 1, Math.floor(fx)));
+      const y = Math.max(0, Math.min(visible - 1, Math.floor(fy)));
+      return {
+        x, y,
+        x_pixel_offset: Math.max(0, Math.floor((fx - x) * cell.w)),
+        y_pixel_offset: Math.max(0, Math.floor((fy - y) * h)),
+      };
+    };
+    // Pointer button index -> protocol name, and its bit in ev.buttons.
+    const BUTTONS = [["left", 1], ["middle", 4], ["right", 2]];
+    let down = 0;         // ev.buttons bits we sent a press for
+    let lastCell = null;  // "x,y" of the last frame sent; moves within it are dropped
+    const press = (kind, b, ev) => {
+      const p = cellAt(ev);
+      if (!p) return;
+      lastCell = p.x + "," + p.y;
+      send({ t: "mouse", kind, button: BUTTONS[b][0], ...p, mods: mods(ev) });
+    };
+    const releaseAll = (ev) => {
+      for (let b = 0; b < BUTTONS.length; b++) if (down & BUTTONS[b][1]) press("release", b, ev);
+      down = 0;
+    };
+    box.addEventListener("pointerdown", (ev) => {
+      if (!grabbed() || ev.shiftKey || !BUTTONS[ev.button]) return;
+      // No native selection or focus shift; the click handler still parks.
+      ev.preventDefault();
+      box.setPointerCapture(ev.pointerId);
+      down |= BUTTONS[ev.button][1];
+      press("press", ev.button, ev);
+    });
+    box.addEventListener("pointermove", (ev) => {
+      // A second button going down or up mid-drag arrives as a move with
+      // ev.button set, not as its own pointerdown/pointerup.
+      if (BUTTONS[ev.button]) {
+        const bit = BUTTONS[ev.button][1];
+        if (!(ev.buttons & bit) && down & bit) { down &= ~bit; press("release", ev.button, ev); }
+        else if (ev.buttons & bit && !(down & bit) && down && !ev.shiftKey) { down |= bit; press("press", ev.button, ev); }
+        return;
+      }
+      if (!down && (!grabbed() || ev.shiftKey)) return;
+      const p = cellAt(ev);
+      if (!p) return;
+      const at = p.x + "," + p.y;
+      if (at === lastCell) return;
+      lastCell = at;
+      sendMove({ t: "mouse", kind: "move", ...p, mods: mods(ev) });
+    });
+    // A release goes out for every press sent, grabbed or not by now, so
+    // the app never sees a button stuck down.
+    box.addEventListener("pointerup", (ev) => {
+      const bit = BUTTONS[ev.button]?.[1];
+      if (!bit || !(down & bit)) return;
+      down &= ~bit;
+      press("release", ev.button, ev);
+    });
+    box.addEventListener("pointercancel", releaseAll);
+    box.addEventListener("contextmenu", (ev) => {
+      if (grabbed() && !ev.shiftKey) ev.preventDefault();
+    });
+    // Wheel: one step per row (or column) of travel, the remainder kept for
+    // the next event, so a trackpad's burst of small deltas scrolls by
+    // distance, not by event count. deltaMode 1 counts lines, 2 pages.
+    let wheelX = 0, wheelY = 0;
+    box.addEventListener("wheel", (ev) => {
+      if (!grabbed() || ev.shiftKey) return;
+      ev.preventDefault();
+      const g = grid();
+      const cell = g && measureCell(g);
+      if (!cell) return;
+      const rows = Number(g.dataset.rows) || 1, cols = Number(g.dataset.cols) || 1;
+      const [stepX, stepY] = ev.deltaMode === 1 ? [1, 1] : ev.deltaMode === 2 ? [1 / cols, 1 / rows] : [cell.w, cell.h];
+      wheelX += ev.deltaX;
+      wheelY += ev.deltaY;
+      const p = cellAt(ev);
+      if (!p) return;
+      const step = (button) => send({ t: "mouse", kind: "press", button, ...p, mods: mods(ev) });
+      for (; wheelY >= stepY; wheelY -= stepY) step("wheeldown");
+      for (; wheelY <= -stepY; wheelY += stepY) step("wheelup");
+      for (; wheelX >= stepX; wheelX -= stepX) step("wheelright");
+      for (; wheelX <= -stepX; wheelX += stepX) step("wheelleft");
+    }, { passive: false });
 
     // Pin the view to the live output. Every scroll is either ours or the
     // user's: if scrollTop still reads what we last wrote, it was ours.
