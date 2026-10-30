@@ -293,8 +293,13 @@ rocket("pty-term", {
     };
     box.addEventListener("pointerdown", (ev) => {
       if (!grabbed() || ev.shiftKey || !BUTTONS[ev.button]) return;
-      // No native selection or focus shift; the click handler still parks.
+      // No native selection or focus shift. Cancelling the press also
+      // cancels the browser moving focus, and Safari may not follow a
+      // captured press with a click, so park focus here rather than wait for
+      // the click handler; with the app holding the mouse there is no
+      // selection to protect.
       ev.preventDefault();
+      try { ta.focus({ preventScroll: true }); } catch {}
       box.setPointerCapture(ev.pointerId);
       down |= BUTTONS[ev.button][1];
       press("press", ev.button, ev);
