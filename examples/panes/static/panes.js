@@ -79,11 +79,15 @@ function wireAll() {
 }
 
 const strip = document.getElementById("strip");
+// Select on mousedown, but park focus on click: focusing the pane mid-press
+// would cancel a drag that is selecting text. The click handlers below (and
+// <pty-term>'s own) park only when no text is selected.
 strip.addEventListener("mousedown", e => {
   if (e.target.closest(".follow")) return;
   const p = e.target.closest(".pane");
   if (!p) return;
-  setSelected(p.dataset.pane, {focus: true});
+  setSelected(p.dataset.pane);
+  if (mode !== "focus") setMode("focus");
 });
 strip.addEventListener("click", e => {
   const btn = e.target.closest(".follow");
