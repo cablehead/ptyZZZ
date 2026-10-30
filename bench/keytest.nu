@@ -2,18 +2,17 @@
 # keytest.nu: synthetic end-to-end keyboard test.
 #
 # Boots an isolated http-nu + serve.nu instance, launches examples/keyprobe
-# inside each pane's shell, then drives a headless chromium at the page with
+# inside the terminal's shell, then drives a headless chromium at the page with
 # ?drive so bench/keyprobe.json's steps replay as synthesized KeyboardEvents.
 # The full path is exercised: browser event -> client keyEvent()/paste ->
 # awaited queue POST -> pty-<pane>.send -> ptyZZZ {t:key}/{t:paste} ->
 # emulator encoding -> pty -> keyprobe's raw-mode byte assertions.
 #
-# The verdict is read back from each pane's keyframe: KEYPROBE PASS/FAIL.
+# The verdict is read back from the terminal's keyframe: KEYPROBE PASS/FAIL.
 #
 # Env:
 #   CHROME       chromium binary (default: chromium on PATH)
 #   HTTP_NU_BIN  http-nu binary (default: ~/http-nu/target/release/http-nu)
-#   PTYZZZ_BINS  panes to test, name=path pairs (default: this repo's binary)
 
 const PORT = 6689
 
@@ -25,14 +24,11 @@ def main [] {
     ^cargo build --release --example keyprobe
     let chrome = $env.CHROME? | default "chromium"
     let http_nu = $env.HTTP_NU_BIN? | default ("~/http-nu/target/release/http-nu" | path expand)
-    let bins = $env.PTYZZZ_BINS? | default $"local=($root)/target/release/ptyZZZ"
-    let panes = $bins | split row "," | each { split row "=" | get 0 | str trim }
+    let panes = ["local"]
     let store = mktemp -d
 
     job spawn {||
-        with-env {PTYZZZ_BINS: $bins} {
-            do { ^$http_nu --dev --datastar --services --store $store $"127.0.0.1:($PORT)" ./serve.nu } | complete | ignore
-        }
+        do { ^$http_nu --dev --datastar --services --store $store $"127.0.0.1:($PORT)" ./serve.nu } | complete | ignore
     } | ignore
 
     # wait for the server, then for each pane's pty service to produce a screen

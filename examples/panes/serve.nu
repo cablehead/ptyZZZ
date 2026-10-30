@@ -17,6 +17,7 @@ const HERE = (path self | path dirname)
 const TPL = ($HERE | path join "templates")
 const PTYZZZ = ($HERE | path join ".." ".." "target" "release" "ptyZZZ" | path expand)
 const FONTS = ($HERE | path join ".." ".." "static" "fonts")
+const ROOT_STATIC = ($HERE | path join ".." ".." "static" | path expand)
 
 if not ($PTYZZZ | path exists) {
   error make {msg: $"panes: missing ($PTYZZZ) -- cargo build --release"}
@@ -366,7 +367,18 @@ if ($HTTP_NU.store? | default null) != null {
       }
     })
 
+    # <pty-term>, its styles and font, and the Datastar Rocket bundle live in
+    # the repo's static/; this example's own CSS and JS in its static/.
+    (route {method: "GET", path-matches: "/static/vendor/:file"} {|req ctx|
+      .static ($ROOT_STATIC | path join "vendor") $"/($ctx.file)"
+    })
+    (route {method: "GET", path-matches: "/static/fonts/:file"} {|req ctx|
+      .static ($ROOT_STATIC | path join "fonts") $"/($ctx.file)"
+    })
     (route {method: "GET", path-matches: "/static/:file"} {|req ctx|
+      if $ctx.file in ["pty-term.js" "pty-term.css"] {
+        return (.static $ROOT_STATIC $"/($ctx.file)")
+      }
       .static ($HERE | path join "static") $"/($ctx.file)"
     })
 

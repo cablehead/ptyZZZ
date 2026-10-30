@@ -119,7 +119,7 @@ if ($HTTP_NU.store? | default null) != null and ($HTTP_NU.services? | default fa
         let e = try { $l | from json } catch { null }
         if $e == null { return }
         match $e.t {
-          'screen' => ( $e.html | .append 'pty.screen.IDX' --ttl last:1 )
+          'screen' => ( $e.html | .append 'pty.screen.IDX' --ttl last:1 --meta {seqno: $e.seqno} )
           'diff'   => ( null | .append 'pty.diff.IDX' --ttl ephemeral --meta {body: $l} )
           _ => null
         }
@@ -171,15 +171,32 @@ def face-views [] {
     # pty.diff.<n>. Stored html carries id=grid-<n>, so datastar targets the
     # right face with no per-face routing; a diff expands to up to three patch
     # events (changed rows + cursor morph, appended rows, trimmed rows).
+    #
+    # The follow starts at the oldest face's keyframe (last:1 keeps one per
+    # face), so a connect replays only what came after it, not the whole
+    # store. Diffs are ephemeral, so the fold keeps the seqno last sent per
+    # face and forwards a diff only when its base matches; a missed one heals
+    # at the next keyframe.
     (route {method: "GET", path: "/sse"} {|req ctx|
-      .cat --follow
+      let seeds = 0..5 | each {|n| .last $"pty.screen.($n)" } | compact
+      let head = .cat --last 1 | get 0?.id?
+      # Piped straight from the if: bound to a variable, the follow would be
+      # collected and never end.
+      if ($seeds | is-not-empty) { .cat --follow --from ($seeds | get id | sort | first) } else if $head != null { .cat --follow --after $head } else { .cat --follow }
       | where topic =~ '^pty\.(screen|diff)\.[0-5]$'
-      | each {|f|
+      | generate {|f, sent|
+          let face = $f.topic | split row "." | last
           if ($f.topic | str starts-with "pty.screen.") {
-            [(.cas $f.hash | to datastar-patch-elements)]
-          } else {
-            let d = $f.meta.body | from json
-            [
+            return {
+              out: [(.cas $f.hash | to datastar-patch-elements)]
+              next: ($sent | upsert $face $f.meta.seqno?)
+            }
+          }
+          let d = $f.meta.body | from json
+          let held = $sent | get -o $face
+          if $held == null or $d.base != $held { return {next: $sent} }
+          {
+            out: ([
               (if ($d.patch | is-not-empty) { $d.patch | to datastar-patch-elements })
               (if ($d.append | is-not-empty) {
                 $d.append | to datastar-patch-elements --mode append --selector $"#($d.target)"
@@ -187,9 +204,10 @@ def face-views [] {
               (if ($d.trim | is-not-empty) {
                 "" | to datastar-patch-elements --mode remove --selector ($d.trim | each {|id| $"#($id)"} | str join ",")
               })
-            ] | compact
+            ] | compact)
+            next: ($sent | upsert $face $d.seqno)
           }
-        }
+        } {}
       | flatten
       | to sse
       | metadata set --content-type "text/event-stream"
@@ -197,9 +215,11 @@ def face-views [] {
 
     # Keystrokes for the interactive face: wrap the POST body as a ptyZZZ input
     # command and append it to pty0.send (the duplex service's stdin feed).
+    # Ephemeral: the service reads a keystroke once, so storing it only grows
+    # the store.
     (route {method: "POST", path: "/input"} {|req ctx|
       let body = $in | into string
-      ({t: "input", b: $body} | to json --raw) + "\n" | .append "pty0.send" | ignore
+      ({t: "input", b: $body} | to json --raw) + "\n" | .append "pty0.send" --ttl ephemeral | ignore
       null | metadata set { merge {'http.response': {status: 204}} }
     })
 

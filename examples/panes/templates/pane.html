@@ -2,5 +2,5 @@
   <div class="label"><span class="name">{{ pane }}</span><span class="status"><span
     class="tag zoomtag">[zoom]</span><button
     type="button" class="follow" title="Scroll to the live output and follow it"></button></span></div>
-  <div class="scroll"><div id="grid-{{ pane }}">connecting...</div></div>
+  <pty-term pane="{{ pane }}"><div class="scroll"><div id="grid-{{ pane }}">connecting...</div></div></pty-term>
 </div>

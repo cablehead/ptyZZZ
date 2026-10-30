@@ -3,8 +3,10 @@
 <head>
   <meta charset="utf-8">
   <title>panes</title>
-  <script type="module" src="{{ datastar | safe }}"></script>
-  <link rel="stylesheet" href="/static/panes.css?v=14">
+  <script type="module" src="/static/vendor/datastar-rocket@1.0.4.js"></script>
+  <script type="module" src="/static/pty-term.js"></script>
+  <link rel="stylesheet" href="/static/pty-term.css">
+  <link rel="stylesheet" href="/static/panes.css?v=15">
 </head>
 <body data-init="@get('/sse')">
   <div id="strip">
@@ -25,6 +27,6 @@
     <span class="hint">mod+K</span>
   </div>
   {% include "panel.html" %}
-  <script type="module" src="/static/panes.js?v=16"></script>
+  <script type="module" src="/static/panes.js?v=17"></script>
 </body>
 </html>
