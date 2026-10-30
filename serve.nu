@@ -225,8 +225,17 @@ let PAGE = (
     # grid div. A diff expands to up to three patch events: changed rows +
     # cursor (morph by id), appended rows (append into the pane's grid),
     # trimmed rows (remove by id).
+    #
+    # The follow starts at the oldest pane's keyframe, as in the panes
+    # example, so a connect replays only what came after it rather than the
+    # whole store. With no keyframe yet it starts at the head; xs.threshold
+    # still comes, and the keyframe request rides on it.
     (route {method: "GET", path: "/sse"} {|req ctx|
-      .cat --follow
+      let seeds = $pane_names | each {|n| .last $"pty-($n).screen" } | compact
+      let head = .cat --last 1 | get 0?.id?
+      # Piped straight from the if: bound to a variable, the follow would be
+      # collected and never end.
+      if ($seeds | is-not-empty) { .cat --follow --from ($seeds | get id | sort | first) } else if $head != null { .cat --follow --after $head } else { .cat --follow }
       | where topic in $topics or topic == "xs.threshold"
       | each {|f|
           if $f.topic == "xs.threshold" {
@@ -265,7 +274,9 @@ let PAGE = (
       let body = $in | into string | str trim --right --char "\n"
       let pane = $req.query?.pane? | default $pane_names.0
       if $pane in $pane_names {
-        $body + "\n" | .append $"pty-($pane).send" | ignore
+        # ephemeral: the duplex service reads a keystroke the moment it is
+        # written and never again, so storing it only grows the store.
+        $body + "\n" | .append $"pty-($pane).send" --ttl ephemeral | ignore
         null | metadata set { merge {'http.response': {status: 204}} }
       } else {
         "unknown pane" | metadata set { merge {'http.response': {status: 400}} }
