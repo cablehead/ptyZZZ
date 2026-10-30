@@ -51,3 +51,7 @@ pty-term .f1{color:var(--c1)}pty-term .f2{color:var(--c2)}pty-term .f3{color:var
 pty-term .f5{color:var(--c5)}pty-term .f6{color:var(--c6)}pty-term .f7{color:var(--c7)}
 pty-term .b1{background:var(--c1)}pty-term .b2{background:var(--c2)}pty-term .b3{background:var(--c3)}pty-term .b4{background:var(--c4)}
 pty-term .b5{background:var(--c5)}pty-term .b6{background:var(--c6)}pty-term .b7{background:var(--c7)}
+
+/* Safari repaint experiment (?repaint=..., see pty-term.js). */
+pty-term[data-repaint~="noblend"]:focus-within .cursor{mix-blend-mode:normal;background:none;box-shadow:inset 0 0 0 2px var(--term-fg)}
+pty-term[data-repaint~="layer"] .scroll>[id^="grid-"]{will-change:transform}

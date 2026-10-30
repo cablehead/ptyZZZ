@@ -111,6 +111,13 @@ rocket("pty-term", {
     if (!box) return;
     const grid = () => box.firstElementChild;
     const nofit = props.nofit || new URLSearchParams(location.search).has("nofit");
+    // Safari repaint experiment: ?repaint=noblend, layer and/or nudge (space
+    // or + separated) switch on candidate fixes for rows Safari leaves stale
+    // after `clear` until something forces a repaint. Each is tried alone in
+    // Safari; the one that works stays and the switch goes.
+    const repaint = new URLSearchParams(location.search).get("repaint") || "";
+    if (repaint) host.dataset.repaint = repaint.split(/[ ,]+/).join(" ");
+    const nudge = repaint.split(/[ ,]+/).includes("nudge");
 
     // Awaited send queue: at most one POST in flight, so frames reach the
     // server in press order by construction. While one is in flight the
@@ -257,6 +264,11 @@ rocket("pty-term", {
     // height of the rows a batch trimmed off the top. A row both removed and
     // re-added in one batch is a morph, not a trim.
     const output = new MutationObserver((muts) => {
+      if (nudge) {
+        // The host is outside the observed box, so this cannot re-trigger.
+        host.style.opacity = "0.999";
+        requestAnimationFrame(() => { host.style.opacity = ""; });
+      }
       if (stick) { toBottom(); return; }
       if (ANCHORS || box.scrollTop === 0) return;
       const removed = new Set(), added = new Set();
