@@ -114,7 +114,8 @@ let pane_names = $panes | get name
 
 const TMPL = r#'<!doctype html>
 <html><head><meta charset=utf-8>
-<script type=module src=DATASTAR></script>
+<script type=module src="/static/vendor/datastar-rocket@1.0.4.js"></script>
+<script type=module src="/static/pty-term.js"></script>
 <style>
   /* Vendored Adwaita Mono Nerd Font (Mono variant: single-width icons).
      A complete monospace face with box-drawing, block, braille, powerline
@@ -145,9 +146,11 @@ const TMPL = r#'<!doctype html>
   #panes.stacked .pane+.pane{border-left:none;border-top:1px solid #444}
   #split{position:fixed;top:0;right:6px;z-index:2;color:#888;background:none;border:none;font:12px var(--term-font);cursor:pointer;padding:2px 4px}
   #split:hover{color:#fff}
-  .pane.focused .label{color:#fff;background:#333}
+  .pane:focus-within .label{color:#fff;background:#333}
   .label{flex:none;font-size:11px;color:#888;background:#1a1a1a;padding:2px 8px}
+  pty-term{flex:1;display:flex;flex-direction:column;min-height:0}
   .scroll{flex:1;overflow-y:auto;position:relative;min-height:0}
+  pty-term .compose{position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;padding:0;border:0;outline:0;resize:none;overflow:hidden;z-index:-1}
   .scroll>[id^="grid-"]{white-space:pre;padding:8px;position:relative;box-sizing:border-box}
   .row{height:var(--cell-h)}
   .pane a{color:inherit;text-decoration:underline}
@@ -155,7 +158,7 @@ const TMPL = r#'<!doctype html>
      XOR-inverted over the glyph, blinking -- the tell for where keys land. */
   .cursor{position:absolute;top:calc(8px + var(--cursor-row)*var(--cell-h));left:calc(8px + var(--cursor-col)*1ch);
     width:1ch;height:var(--cell-h);pointer-events:none;box-shadow:inset 0 0 0 1px var(--term-fg)}
-  .pane.focused .cursor{background:var(--term-fg);box-shadow:none;mix-blend-mode:difference;
+  .pane:focus-within .cursor{background:var(--term-fg);box-shadow:none;mix-blend-mode:difference;
     animation:cursor-blink 1s steps(2) infinite}
   @keyframes cursor-blink{50%{opacity:0.4}}
   .wc{display:inline-block;width:calc(var(--w)*1ch)}
@@ -170,121 +173,30 @@ const TMPL = r#'<!doctype html>
   <div id=panes>__PANES_HTML__</div>
   <button id=split title="toggle split direction"></button>
   <script type=module>
-    const PANES = __PANES_JS__;
-    // The client is byte-blind: it ships semantic key events and the
-    // emulator encodes them against its live input modes (application
-    // cursor keys, bracketed paste, ...). See PROTOCOL.md {t:key}/{t:paste}.
-    const NAMED = ["ArrowUp","ArrowDown","ArrowLeft","ArrowRight","Home","End",
-      "PageUp","PageDown","Insert","Delete","Enter","Tab","Backspace","Escape"];
-    function keyEvent(ev) {
-      if (["Shift","Control","Alt","Meta","CapsLock"].includes(ev.key)) return null;
-      const mods = (ev.shiftKey?1:0)|(ev.altKey?2:0)|(ev.ctrlKey?4:0)|(ev.metaKey?8:0);
-      if (ev.key.length === 1) {
-        // Cmd+char belongs to the browser/OS (copy, reload, ...); Cmd with
-        // the named keys below is terminal input (Cmd+Left = CSI 1;9D).
-        if (ev.metaKey) return null;
-        // Option as compose (non-US layouts) delivers a finished glyph in
-        // ev.key; drop the alt bit so it isn't re-encoded as a Meta chord.
-        if (ev.altKey && !ev.ctrlKey) {
-          const codeLetter = /^Key([A-Z])$/.exec(ev.code)?.[1]?.toLowerCase();
-          if (!(codeLetter && ev.key.toLowerCase() === codeLetter)) {
-            return {t:"key", key: ev.key, mods: mods & ~2};
-          }
-        }
-        return {t:"key", key: ev.key, mods};
-      }
-      if (NAMED.includes(ev.key) || /^F\d+$/.test(ev.key)) {
-        return {t:"key", key: ev.key, mods};
-      }
-      return null;
-    }
-    // Awaited send queue, one per pane: at most one POST in flight, so
-    // frames reach the server in press order by construction. While one is
-    // in flight the backlog accumulates and drains as a single NDJSON
-    // batch, capping the added delay at one round trip.
-    const queues = {};
-    function send(pane, frame) {
-      const s = queues[pane] ??= {items: [], sending: false};
-      s.items.push(JSON.stringify(frame));
-      drain(pane);
-    }
-    async function drain(pane) {
-      const s = queues[pane];
-      if (s.sending) return;
-      s.sending = true;
-      while (s.items.length) {
-        const batch = s.items.splice(0).join("\n") + "\n";
-        try { await fetch("/input?pane=" + pane, {method:"POST", body: batch}); } catch {}
-      }
-      s.sending = false;
-    }
-    // Focus: keystrokes go to the clicked pane.
-    let focused = PANES[0];
-    function setFocus(name) {
-      focused = name;
-      document.querySelectorAll(".pane").forEach(p =>
-        p.classList.toggle("focused", p.dataset.pane === name));
-    }
-    // Composition surface (lifted from stacks2099 key-buffer.js): dead keys
-    // and IME need the OS composing into a real editable element; without
-    // one, an accent collapses to its base letter. Keydowns during a
-    // composition are provisional and skipped; compositionend delivers the
-    // finished text, which travels as {t:input} (composed text is text,
-    // not keys). Offscreen via opacity, not display:none, which cannot
-    // hold focus.
-    const ta = document.createElement("textarea");
-    ta.id = "compose";
-    ta.setAttribute("aria-hidden", "true");
-    ta.tabIndex = -1;
-    ta.autocapitalize = "off"; ta.autocomplete = "off"; ta.spellcheck = false;
-    ta.style.cssText = "position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;padding:0;border:0;outline:0;resize:none;overflow:hidden;z-index:-1;";
-    document.body.appendChild(ta);
-    let composing = false;
-    ta.addEventListener("compositionstart", () => { composing = true; });
-    ta.addEventListener("compositionend", ev => {
-      composing = false;
-      const data = ev.data || ta.value;
-      ta.value = "";
-      if (data) send(focused, {t:"input", b: data});
-    });
-    // Park DOM focus on the composition surface, deferred past layout, and
-    // never while the user holds a text selection (focusing would collapse
-    // it; typing re-parks via the keydown path instead).
-    function parkFocus() {
-      requestAnimationFrame(() => {
-        const sel = getSelection();
-        if (sel && !sel.isCollapsed) return;
-        try { ta.focus(); } catch {}
-      });
-    }
-    // Route keys on mousedown, but park focus on click: click fires after
-    // mouseup, so a drag's finished selection is visible to parkFocus's
-    // guard. On mousedown a drag's selection is still collapsed one frame
-    // in, so parking there steals focus and cancels the drag. A plain
-    // click must still park: a dead key maps to null in keyEvent, so the
-    // keydown path alone would not refocus the surface before composing.
-    // Mirrors stacks2099, which calls focusInput from the click handler.
-    document.querySelectorAll(".pane").forEach(p => {
-      p.addEventListener("mousedown", () => setFocus(p.dataset.pane));
-      p.addEventListener("click", () => parkFocus());
-    });
-    setFocus(focused);
-    parkFocus();
+    // The layout: panes side by side or stacked, and which pane holds focus
+    // at load. Everything inside a pane is <pty-term> (static/pty-term.js).
+    const params = new URLSearchParams(location.search);
+    const term = (name) => document.querySelector(`pty-term[pane="${name}"]`) || document.querySelector("pty-term");
+    await customElements.whenDefined("pty-term");
+    // The element's park() is defined once it has rendered.
+    const park = (name) => requestAnimationFrame(() => term(name)?.park?.());
+    park();
     // ?drive replays a key/paste script from the URL hash (base64 JSON, the
-    // bench/keyprobe.json shape) as synthesized events, exercising the real
-    // keydown/paste listeners end to end. Test harness affordance, like
-    // ?nofit; see bench/keytest.nu.
-    if (new URLSearchParams(location.search).has("drive")) (async () => {
+    // bench/keyprobe.json shape) as synthesized events on the pane's
+    // composition box, exercising the element's real keydown/paste
+    // listeners end to end. Test harness affordance, like ?nofit; see
+    // bench/keytest.nu.
+    if (params.has("drive")) (async () => {
       // atob yields latin1 code units; decode the underlying UTF-8 bytes
       // properly or non-ASCII compose steps arrive double-encoded.
       const spec = JSON.parse(new TextDecoder().decode(
         Uint8Array.from(atob(location.hash.slice(1)), c => c.charCodeAt(0))));
-      if (spec.pane) setFocus(spec.pane);
       await new Promise(r => setTimeout(r, spec.startDelay ?? 2000));
+      const el = term(spec.pane).querySelector(".compose");
       for (const s of spec.steps) {
         if (s.pause) await new Promise(r => setTimeout(r, s.pause));
         if (s.key !== undefined) {
-          dispatchEvent(new KeyboardEvent("keydown", {
+          el.dispatchEvent(new KeyboardEvent("keydown", {
             key: s.key, code: s.code ?? "",
             shiftKey: !!(s.mods & 1), altKey: !!(s.mods & 2), ctrlKey: !!(s.mods & 4), metaKey: !!(s.mods & 8),
             bubbles: true, cancelable: true,
@@ -293,13 +205,12 @@ const TMPL = r#'<!doctype html>
         if (s.paste !== undefined) {
           const dt = new DataTransfer();
           dt.setData("text/plain", s.paste);
-          dispatchEvent(new ClipboardEvent("paste", {clipboardData: dt, bubbles: true, cancelable: true}));
+          el.dispatchEvent(new ClipboardEvent("paste", {clipboardData: dt, bubbles: true, cancelable: true}));
         }
         if (s.compose !== undefined) {
           // Replay a composition session the way a browser fires one:
           // start, provisional keydowns flagged isComposing (which the
-          // client must drop), then the finished text on compositionend.
-          const el = document.getElementById("compose");
+          // element must drop), then the finished text on compositionend.
           el.dispatchEvent(new CompositionEvent("compositionstart", {bubbles: true}));
           el.dispatchEvent(new KeyboardEvent("keydown", {key: "Dead", isComposing: true, bubbles: true, cancelable: true}));
           for (const ch of s.compose) {
@@ -310,127 +221,23 @@ const TMPL = r#'<!doctype html>
         await new Promise(r => setTimeout(r, s.gap ?? 60));
       }
     })();
-    addEventListener("keydown", ev => {
-      // Composing keydowns (dead keys, IME) are provisional; skip them.
-      // compositionend sends the finished string.
-      if (ev.isComposing || ev.keyCode === 229 || composing) return;
-      // Leave keys aimed at real form fields alone; our own composition
-      // surface is the pty's capture point, not a form field.
-      const t = ev.target, tag = t && t.tagName;
-      if (t !== ta && (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (t && t.isContentEditable))) return;
-      // Selection beats SIGINT: Ctrl+C with a selection copies.
-      if (ev.ctrlKey && !ev.altKey && !ev.metaKey && ev.key === "c") {
-        const sel = getSelection().toString();
-        if (sel) { navigator.clipboard.writeText(sel).catch(()=>{}); ev.preventDefault(); return; }
-      }
-      const frame = keyEvent(ev);
-      if (frame === null) return;
-      // A key we forward means the user is typing, not selecting: re-park
-      // focus so the next dead key composes, and drop any stray char the
-      // keypress may have placed in the surface.
-      if (document.activeElement !== ta) ta.focus();
-      ev.preventDefault();
-      ta.value = "";
-      send(focused, frame);
-    });
-    addEventListener("paste", ev => {
-      const text = ev.clipboardData?.getData("text");
-      if (!text) return;
-      ev.preventDefault();
-      send(focused, {t:"paste", s:text});
-    });
-    document.addEventListener("copy", ev => {
-      // Rows are space-padded to full width; strip trailing whitespace
-      // per line so copies match what a terminal emulator would yield.
-      const sel = getSelection(); if (!sel) return;
-      const text = sel.toString(); if (!text) return;
-      const trimmed = text.split("\n").map(l => l.replace(/[ \t]+$/,"")).join("\n");
-      if (trimmed === text) return;
-      ev.clipboardData?.setData("text/plain", trimmed);
-      ev.preventDefault();
-    });
-    // Fit each pty to its pane: measure one rendered line box from a probe
-    // row (inherits the pane font and the --cell-h row pitch), derive cols/rows
-    // from the pane box, and send {t:resize} when the geometry changes.
-    // Every open tab does this, so the last viewer to resize wins.
-    const lastFit = {};
-    function fit() {
-      for (const name of PANES) {
-        const box = document.querySelector(`.pane[data-pane=${name}] .scroll`);
-        if (!box) continue;
-        const probe = document.createElement("div");
-        probe.textContent = "M".repeat(40);
-        probe.style.cssText = "position:absolute;visibility:hidden;white-space:pre";
-        box.appendChild(probe);
-        const r = probe.getBoundingClientRect();
-        box.removeChild(probe);
-        if (r.width === 0 || r.height === 0) continue;
-        const cols = Math.max(20, Math.floor((box.clientWidth - 16) / (r.width / 40)));
-        const rows = Math.max(5, Math.floor((box.clientHeight - 16) / r.height));
-        const prev = lastFit[name];
-        if (!prev || prev.cols !== cols || prev.rows !== rows) {
-          lastFit[name] = {cols, rows};
-          send(name, {t:"resize", cols, rows});
-        }
-      }
-    }
-    // ?nofit observes without resizing the ptys -- for screenshots and
-    // debugging; a second viewer's fit would otherwise fight this one's.
-    const NOFIT = new URLSearchParams(location.search).has("nofit");
-    if (!NOFIT) {
-      let fitTimer;
-      addEventListener("resize", () => { clearTimeout(fitTimer); fitTimer = setTimeout(fit, 200); });
-      fit();
-      // font-display:swap means the first fit may have measured the
-      // fallback font; re-measure once the real face is loaded.
-      document.fonts.ready.then(fit);
-    }
     // Split direction: side by side (row) or stacked. Sticky via
     // localStorage; ?split=stacked/row overrides (handy for links and
-    // headless checks). Toggling reshapes the pane boxes, so refit.
+    // headless checks). Each pane refits itself when its box changes.
     const panesEl = document.getElementById("panes");
     const splitBtn = document.getElementById("split");
     function setSplit(stacked) {
       panesEl.classList.toggle("stacked", stacked);
       splitBtn.textContent = stacked ? "=" : "||";
       try { localStorage.setItem("split", stacked ? "stacked" : "row"); } catch {}
-      if (!NOFIT) fit();
     }
     splitBtn.addEventListener("click", () => {
       setSplit(!panesEl.classList.contains("stacked"));
-      parkFocus();
+      park(document.activeElement?.closest("pty-term")?.getAttribute("pane"));
     });
-    const splitParam = new URLSearchParams(location.search).get("split");
+    const splitParam = params.get("split");
     setSplit(splitParam ? splitParam === "stacked"
       : (() => { try { return localStorage.getItem("split") === "stacked"; } catch { return false; } })());
-    // Follow the cursor like a terminal, not the last grid row: after a
-    // clear the prompt sits at the top of the screen region with blank
-    // rows below it, and bottom-pinning would hide it. Scrolling the
-    // cursor out of view pauses following; scrolling it back resumes --
-    // our own follow scrolls keep it visible, so no self-scroll flag is
-    // needed.
-    const follow = {};
-    function cursorInView(name) {
-      const box = document.querySelector(`.pane[data-pane=${name}] .scroll`);
-      const cur = document.getElementById(`grid-${name}-cursor`);
-      if (!box || !cur) return true;
-      const b = box.getBoundingClientRect(), c = cur.getBoundingClientRect();
-      return c.bottom > b.top && c.top < b.bottom;
-    }
-    document.querySelectorAll(".pane").forEach(p => {
-      const name = p.dataset.pane;
-      follow[name] = true;
-      p.querySelector(".scroll").addEventListener("scroll", () => {
-        follow[name] = cursorInView(name);
-      });
-    });
-    new MutationObserver(() => {
-      for (const name of PANES) {
-        if (follow[name]) {
-          document.getElementById(`grid-${name}-cursor`)?.scrollIntoView({block: "nearest"});
-        }
-      }
-    }).observe(document.body, {childList: true, subtree: true});
   </script>
 </body></html>'#
 
@@ -438,16 +245,18 @@ let PAGE = (
   $TMPL
   | str replace "__PANES_HTML__" (
       $panes | each {|p|
-        $"<div class=pane data-pane=($p.name)><div class=label>($p.name)</div><div class=scroll><div id=grid-($p.name)>connecting...</div></div></div>"
+        $"<div class=pane data-pane=($p.name)><div class=label>($p.name)</div><pty-term pane=($p.name) NOFIT></pty-term></div>"
       } | str join ""
     )
-  | str replace "__PANES_JS__" ($pane_names | to json --raw)
 )
 
 {|req|
   dispatch $req [
     (route {method: "GET", path: "/"} {|req ctx|
-      $PAGE | str replace "DATASTAR" $DATASTAR_JS_PATH | metadata set --content-type "text/html"
+      # ?nofit observes without resizing the ptys -- for screenshots and
+      # debugging; a second viewer's fit would otherwise fight this one's.
+      let nofit = if ($req.query? | default {} | columns | any {|k| $k == "nofit" }) { "nofit" } else { "" }
+      $PAGE | str replace --all "NOFIT" $nofit | metadata set --content-type "text/html"
     })
 
     # One stream for every pane: each stored keyframe replays first
@@ -500,6 +309,14 @@ let PAGE = (
       } else {
         "unknown pane" | metadata set { merge {'http.response': {status: 400}} }
       }
+    })
+
+    # The pty-term element and the vendored Datastar Rocket bundle.
+    (route {method: "GET", path-matches: "/static/:file"} {|req ctx|
+      .static ($HERE | path join "static") $"/($ctx.file)"
+    })
+    (route {method: "GET", path-matches: "/static/vendor/:file"} {|req ctx|
+      .static ($HERE | path join "static" "vendor") $"/($ctx.file)"
     })
 
     # Vendored terminal font. .static sets the content-type.
