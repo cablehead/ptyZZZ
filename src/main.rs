@@ -28,7 +28,8 @@ use wezterm_surface::hyperlink::{
 };
 use wezterm_term::{
     color::{ColorAttribute, ColorPalette},
-    CellAttributes, Intensity, KeyCode, KeyModifiers, Line, StableRowIndex, Terminal,
+    CellAttributes, Intensity, KeyCode, KeyModifiers, Line, MouseButton as TermMouseButton,
+    MouseEvent, MouseEventKind as TermMouseEventKind, StableRowIndex, Terminal,
     TerminalConfiguration, TerminalSize, Underline,
 };
 
@@ -105,10 +106,82 @@ enum Cmd {
     },
     /// pasted text; wrapped in bracketed-paste markers when the app enabled them
     Paste { s: String },
+    /// a mouse event in zero-based terminal cell coordinates
+    Mouse {
+        kind: MouseKind,
+        #[serde(default)]
+        button: Option<MouseButton>,
+        x: usize,
+        y: usize,
+        #[serde(default)]
+        x_pixel_offset: isize,
+        #[serde(default)]
+        y_pixel_offset: isize,
+        #[serde(default)]
+        mods: u8,
+    },
+    /// the viewer gained or lost focus; reported to the app as CSI I / CSI O
+    /// when it enabled focus tracking (?1004h)
+    Focus { on: bool },
     Resize { cols: u16, rows: u16 },
     /// ask for a keyframe now: a joiner's fresh join point, instead of
     /// waiting out the healing interval
     Screen,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum MouseKind {
+    Press,
+    Release,
+    Move,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum MouseButton {
+    Left,
+    Middle,
+    Right,
+    Wheelup,
+    Wheeldown,
+    Wheelleft,
+    Wheelright,
+}
+
+fn make_mouse_event(
+    kind: MouseKind,
+    button: Option<MouseButton>,
+    x: usize,
+    y: usize,
+    x_pixel_offset: isize,
+    y_pixel_offset: isize,
+    mods: u8,
+) -> MouseEvent {
+    let kind = match kind {
+        MouseKind::Press => TermMouseEventKind::Press,
+        MouseKind::Release => TermMouseEventKind::Release,
+        MouseKind::Move => TermMouseEventKind::Move,
+    };
+    let button = match button {
+        Some(MouseButton::Left) => TermMouseButton::Left,
+        Some(MouseButton::Middle) => TermMouseButton::Middle,
+        Some(MouseButton::Right) => TermMouseButton::Right,
+        Some(MouseButton::Wheelup) => TermMouseButton::WheelUp(1),
+        Some(MouseButton::Wheeldown) => TermMouseButton::WheelDown(1),
+        Some(MouseButton::Wheelleft) => TermMouseButton::WheelLeft(1),
+        Some(MouseButton::Wheelright) => TermMouseButton::WheelRight(1),
+        None => TermMouseButton::None,
+    };
+    MouseEvent {
+        kind,
+        button,
+        x,
+        y: y as i64,
+        x_pixel_offset,
+        y_pixel_offset,
+        modifiers: parse_mods(mods),
+    }
 }
 
 /// Browser `KeyboardEvent.key` name -> wezterm KeyCode. Single chars pass
@@ -402,6 +475,29 @@ fn main() {
                     Ok(Cmd::Paste { s }) => {
                         let _ = term.lock().unwrap().send_paste(&s);
                     }
+                    Ok(Cmd::Mouse {
+                        kind,
+                        button,
+                        x,
+                        y,
+                        x_pixel_offset,
+                        y_pixel_offset,
+                        mods,
+                    }) => {
+                        let event = make_mouse_event(
+                            kind,
+                            button,
+                            x,
+                            y,
+                            x_pixel_offset,
+                            y_pixel_offset,
+                            mods,
+                        );
+                        let _ = term.lock().unwrap().mouse_event(event);
+                    }
+                    Ok(Cmd::Focus { on }) => {
+                        term.lock().unwrap().focus_changed(on);
+                    }
                     Ok(Cmd::Resize { cols, rows }) => {
                         let _ = master.lock().unwrap().resize(PtySize {
                             cols,
@@ -577,6 +673,10 @@ struct EmitState {
     /// cursor state the client currently has: position plus visibility. Only
     /// ever advanced from a sample taken while the cursor was visible.
     shown_cursor: (usize, usize, bool),
+    /// Whether the application has enabled terminal mouse reporting. This is
+    /// rendered on the cursor overlay so clients can preserve native selection
+    /// and scrollback whenever the application has not grabbed the mouse.
+    shown_mouse_grabbed: bool,
     /// when the terminal's cursor first went DECTCEM-hidden, cleared the
     /// moment it comes back. Drives the hide grace below.
     hidden_since: Option<Instant>,
@@ -600,6 +700,7 @@ impl EmitState {
             last_rows: 0,
             last_alt: false,
             shown_cursor: (usize::MAX, usize::MAX, true),
+            shown_mouse_grabbed: false,
             hidden_since: None,
             sent_initial: false,
             last_keyframe: Instant::now(),
@@ -634,6 +735,7 @@ impl EmitState {
         let size = term.get_size();
         let (cols, rows) = (size.cols, size.rows);
         let cursor = term.cursor_pos();
+        let mouse_grabbed = term.is_mouse_grabbed();
         let screen = term.screen();
         let total = screen.scrollback_rows();
         let base = screen.phys_to_stable_row_index(0);
@@ -705,12 +807,14 @@ impl EmitState {
         };
 
         let cursor_moved = cursor_now != self.shown_cursor;
+        let mouse_changed = mouse_grabbed != self.shown_mouse_grabbed;
         if !forced
             && !keyframe_due
             && damaged.is_empty()
             && appended.is_empty()
             && trimmed.is_empty()
             && !cursor_moved
+            && !mouse_changed
         {
             self.last_seqno = seqno;
             return None;
@@ -752,6 +856,7 @@ impl EmitState {
             && appended.is_empty()
             && trimmed.is_empty()
             && !cursor_moved
+            && !mouse_changed
         {
             self.last_seqno = seqno;
             return None;
@@ -768,7 +873,14 @@ impl EmitState {
                 "<div id=\"{}\" data-cols=\"{cols}\" data-rows=\"{rows}\">",
                 self.target
             );
-            render_cursor_into(&mut html, &self.target, cursor_now.0, cursor_now.1, cursor_now.2);
+            render_cursor_into(
+                &mut html,
+                &self.target,
+                cursor_now.0,
+                cursor_now.1,
+                cursor_now.2,
+                mouse_grabbed,
+            );
             for row in self.cache.values() {
                 html.push_str(row);
             }
@@ -781,8 +893,15 @@ impl EmitState {
             for stable in &changed {
                 patch.push_str(&self.cache[stable]);
             }
-            if cursor_moved {
-                render_cursor_into(&mut patch, &self.target, cursor_now.0, cursor_now.1, cursor_now.2);
+            if cursor_moved || mouse_changed {
+                render_cursor_into(
+                    &mut patch,
+                    &self.target,
+                    cursor_now.0,
+                    cursor_now.1,
+                    cursor_now.2,
+                    mouse_grabbed,
+                );
             }
             let mut append = String::new();
             for stable in &appended {
@@ -807,6 +926,7 @@ impl EmitState {
         self.last_rows = rows;
         self.last_alt = alt;
         self.shown_cursor = cursor_now;
+        self.shown_mouse_grabbed = mouse_grabbed;
         self.sent_initial = true;
         Some(frame)
     }
@@ -904,11 +1024,18 @@ fn scan_hyperlinks(term: &mut Terminal, since: usize, lo: Option<StableRowIndex>
 /// vars, so a cursor move patches ~90 bytes instead of touching any row.
 /// DECTCEM hidden renders as display:none. Whether a hide is real, and which
 /// position survives it, is decided in `produce` -- see CURSOR_HIDE_GRACE.
-fn render_cursor_into(out: &mut String, target: &str, row: usize, col: usize, visible: bool) {
+fn render_cursor_into(
+    out: &mut String,
+    target: &str,
+    row: usize,
+    col: usize,
+    visible: bool,
+    mouse_grabbed: bool,
+) {
     let display = if visible { "" } else { ";display:none" };
     let _ = write!(
         out,
-        "<div class=\"cursor\" id=\"{target}-cursor\" style=\"--cursor-row:{row};--cursor-col:{col}{display}\"></div>"
+        "<div class=\"cursor\" id=\"{target}-cursor\" data-mouse-grabbed=\"{mouse_grabbed}\" style=\"--cursor-row:{row};--cursor-col:{col}{display}\"></div>"
     );
 }
 
@@ -1236,6 +1363,28 @@ mod tests {
         assert_eq!(scan.feed(b"\x1b[?25l\x1b[?1049h"), None, "other modes are not it");
     }
 
+    #[derive(Clone)]
+    struct Capture(Arc<Mutex<Vec<u8>>>);
+    impl Write for Capture {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// The terminal hands its pty writes to a thread of its own, so the bytes
+    /// land a moment after the call returns. Wait for `want` of them.
+    fn captured(c: &Arc<Mutex<Vec<u8>>>, want: usize) -> Vec<u8> {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while c.lock().unwrap().len() < want && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        c.lock().unwrap().clone()
+    }
+
     /// A terminal wired up the way `main` does, minus the pty.
     fn term(rows: usize, cols: usize) -> Terminal {
         Terminal::new(
@@ -1249,6 +1398,75 @@ mod tests {
 
     fn seqno(f: &serde_json::Value) -> u64 {
         f["seqno"].as_u64().expect("frame carries seqno")
+    }
+
+    #[test]
+    fn semantic_mouse_events_use_the_terminals_active_encoding() {
+        let sink = Arc::new(Mutex::new(Vec::new()));
+        let mut t = Terminal::new(
+            TerminalSize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0, dpi: 0 },
+            Arc::new(MinimalConfig { scrollback: 100 }),
+            "ptyZZZ",
+            "0",
+            Box::new(Capture(sink.clone())),
+        );
+        t.advance_bytes(b"\x1b[?1000h\x1b[?1006h");
+        let event = make_mouse_event(
+            MouseKind::Press,
+            Some(MouseButton::Left),
+            12,
+            4,
+            0,
+            0,
+            4,
+        );
+        t.mouse_event(event).unwrap();
+        let want = b"\x1b[<16;13;5M";
+        assert_eq!(captured(&sink, want.len()), want);
+    }
+
+    #[test]
+    fn focus_reports_only_once_the_app_asks() {
+        let sink = Arc::new(Mutex::new(Vec::new()));
+        let mut t = Terminal::new(
+            TerminalSize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0, dpi: 0 },
+            Arc::new(MinimalConfig { scrollback: 100 }),
+            "ptyZZZ",
+            "0",
+            Box::new(Capture(sink.clone())),
+        );
+        let cmd: Cmd = serde_json::from_str(r#"{"t":"focus","on":false}"#).unwrap();
+        assert!(matches!(cmd, Cmd::Focus { on: false }));
+        t.focus_changed(false);
+        t.focus_changed(true);
+        t.advance_bytes(b"\x1b[?1004h");
+        t.focus_changed(false);
+        t.focus_changed(true);
+        let want = b"\x1b[O\x1b[I";
+        assert_eq!(captured(&sink, want.len()), want, "nothing before ?1004h");
+    }
+
+    #[test]
+    fn mouse_grab_changes_patch_the_cursor_metadata() {
+        let mut t = term(24, 80);
+        let mut st = EmitState::new("grid".to_string());
+        let opening = st.produce(&mut t, false).expect("opening keyframe");
+        assert!(opening["html"].as_str().unwrap().contains(
+            "data-mouse-grabbed=\"false\""
+        ));
+
+        t.advance_bytes(b"\x1b[?1000h");
+        let grabbed = st.produce(&mut t, false).expect("mouse mode change emits");
+        assert_eq!(grabbed["t"], "diff");
+        assert!(grabbed["patch"].as_str().unwrap().contains(
+            "data-mouse-grabbed=\"true\""
+        ));
+
+        t.advance_bytes(b"\x1b[?1000l");
+        let released = st.produce(&mut t, false).expect("mouse mode reset emits");
+        assert!(released["patch"].as_str().unwrap().contains(
+            "data-mouse-grabbed=\"false\""
+        ));
     }
 
     /// Every diff names the frame it was computed against, and that name is the

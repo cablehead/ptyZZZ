@@ -28,6 +28,11 @@
 pty-term{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;
   background:var(--term-bg);color:var(--term-fg);font:14px/var(--cell-h) var(--term-font)}
 pty-term .scroll{flex:1;overflow-y:auto;position:relative;min-height:0}
+/* While the app holds the mouse, clicks go to it, not to text selection:
+   the arrow says so. Shift keeps native selection, so it brings the text
+   cursor back (pty-term.js sets .shift while Shift is down). */
+pty-term .scroll:has(.cursor[data-mouse-grabbed="true"]){cursor:default}
+pty-term.shift .scroll:has(.cursor[data-mouse-grabbed="true"]){cursor:text}
 pty-term .scroll>[id^="grid-"]{white-space:pre;padding:8px;position:relative;box-sizing:border-box}
 pty-term .row{height:var(--cell-h)}
 pty-term a{color:inherit;text-decoration:underline}

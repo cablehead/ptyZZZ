@@ -8,6 +8,10 @@ a nushell service closure adapts these lines to/from frames.
     {"t":"input","b":"ls\n"}        raw bytes for the pty (b is a utf-8 string)
     {"t":"key","key":"ArrowUp","mods":0}
     {"t":"paste","s":"multi\nline"}
+    {"t":"mouse","kind":"press","button":"left","x":12,"y":4,"mods":0}
+    {"t":"mouse","kind":"move","x":13,"y":4,"mods":0}
+    {"t":"mouse","kind":"release","button":"left","x":13,"y":4,"mods":0}
+    {"t":"focus","on":true}         the viewer gained (or lost) focus
     {"t":"resize","cols":80,"rows":24}
     {"t":"screen"}                  emit a keyframe now
 
@@ -19,6 +23,21 @@ which a byte-sending client cannot know. `paste` is wrapped in
 bracketed-paste markers when the application has enabled them. Prefer
 these over `input` for anything a user typed; `input` stays as the raw
 escape hatch (and carries IME-composed text).
+
+`mouse` carries a semantic mouse event in zero-based visible-screen cell
+coordinates. `kind` is `press`, `release`, or `move`. Buttons are `left`,
+`middle`, `right`, `wheelup`, `wheeldown`, `wheelleft`, and `wheelright`; a
+move may omit `button`. `mods` uses the same bitfield as `key`. Optional
+`x_pixel_offset` and `y_pixel_offset` fields locate the event within its cell.
+The emulator encodes the event using the application's active mouse protocol.
+Clients should only capture mouse input when the rendered cursor element has
+`data-mouse-grabbed="true"`; Shift should bypass capture for native text
+selection and scrollback.
+
+`focus` tells the emulator the viewer gained or lost focus. It reports
+`CSI I` / `CSI O` to the application only when the application enabled focus
+tracking (`?1004h`). Losing focus also releases any mouse buttons the
+application saw pressed.
 
 `screen` asks for a keyframe on the next emit, whether or not anything
 changed. An adapter sends it when a subscriber joins: the stored keyframe can
@@ -36,8 +55,10 @@ clock.
 lines, default 3000; 0 = visible screen only) as one `<div id="grid">` wrapping
 a `<div class="row" id="grid-r-{stable}">` per line, keyed by wezterm's stable
 row index, plus a `<div class="cursor" id="grid-cursor">` overlay positioned by
-`--cursor-row`/`--cursor-col` CSS vars. Keyframes are emitted on start, on
-resize, on an alt-screen flip, when a burst changes more than half the rows,
+`--cursor-row`/`--cursor-col` CSS vars. The cursor's `data-mouse-grabbed`
+attribute reports whether the application enabled terminal mouse tracking. A
+mouse-mode-only change patches that cursor element. Keyframes are emitted on
+start, on resize, on an alt-screen flip, when a burst changes more than half the rows,
 and as a healing checkpoint every `--keyframe-interval` seconds (default 5)
 while diffs are flowing. The adapter stores the latest keyframe (`ttl last:1`)
 as the join point for new subscribers.
