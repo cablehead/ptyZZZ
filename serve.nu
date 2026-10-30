@@ -129,8 +129,12 @@ const TMPL = r#'<!doctype html>
   :root{--term-font:"AdwaitaMonoNerd",monospace;--term-bg:#111;--term-fg:#ddd;
     --c0:#000;--c1:#cd0000;--c2:#00cd00;--c3:#cdcd00;--c4:#1e90ff;--c5:#cd00cd;
     --c6:#00cdcd;--c7:#e5e5e5;--c8:#4d4d4d;--c9:#ff5454;--c10:#54ff54;--c11:#ffff54;
-    --c12:#5454ff;--c13:#ff54ff;--c14:#54ffff;--c15:#fff;}
-  body{background:#000;color:var(--term-fg);margin:0;font:14px/18px var(--term-font);overflow:hidden}
+    --c12:#5454ff;--c13:#ff54ff;--c14:#54ffff;--c15:#fff;
+    /* One row pitch, as in the panes example: the rows' height and the
+       cursor's step down the grid must be the same value, or the cursor
+       drifts off its row a little more on every row. */
+    --cell-h:18px;}
+  body{background:#000;color:var(--term-fg);margin:0;font:14px/var(--cell-h) var(--term-font);overflow:hidden}
   #panes{display:flex;height:100vh}
   #panes.stacked{flex-direction:column}
   /* min-width/height:0: flex items otherwise refuse to shrink below their
@@ -145,12 +149,12 @@ const TMPL = r#'<!doctype html>
   .label{flex:none;font-size:11px;color:#888;background:#1a1a1a;padding:2px 8px}
   .scroll{flex:1;overflow-y:auto;position:relative;min-height:0}
   .scroll>[id^="grid-"]{white-space:pre;padding:8px;position:relative;box-sizing:border-box}
-  .row{min-height:1.2em}
+  .row{height:var(--cell-h)}
   .pane a{color:inherit;text-decoration:underline}
   /* Inert cursor: hollow outline. The focused pane's cursor is live: solid,
      XOR-inverted over the glyph, blinking -- the tell for where keys land. */
-  .cursor{position:absolute;top:calc(8px + var(--cursor-row)*1.2em);left:calc(8px + var(--cursor-col)*1ch);
-    width:1ch;height:1.2em;pointer-events:none;box-shadow:inset 0 0 0 1px var(--term-fg)}
+  .cursor{position:absolute;top:calc(8px + var(--cursor-row)*var(--cell-h));left:calc(8px + var(--cursor-col)*1ch);
+    width:1ch;height:var(--cell-h);pointer-events:none;box-shadow:inset 0 0 0 1px var(--term-fg)}
   .pane.focused .cursor{background:var(--term-fg);box-shadow:none;mix-blend-mode:difference;
     animation:cursor-blink 1s steps(2) infinite}
   @keyframes cursor-blink{50%{opacity:0.4}}
@@ -346,7 +350,7 @@ const TMPL = r#'<!doctype html>
       ev.preventDefault();
     });
     // Fit each pty to its pane: measure one rendered line box from a probe
-    // row (inherits the pane font and 1.2 line-height), derive cols/rows
+    // row (inherits the pane font and the --cell-h row pitch), derive cols/rows
     // from the pane box, and send {t:resize} when the geometry changes.
     // Every open tab does this, so the last viewer to resize wins.
     const lastFit = {};
