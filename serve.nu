@@ -70,6 +70,7 @@ if ($HTTP_NU.store? | default null) != null and ($HTTP_NU.services? | default fa
 
 const PAGE = r#'<!doctype html>
 <html><head><meta charset=utf-8>
+<script type=importmap>{"imports": {"datastar": "/static/vendor/datastar-rocket@1.0.4.js"}}</script>
 <script type=module src="/static/vendor/datastar-rocket@1.0.4.js"></script>
 <script type=module src="/static/pty-term.js"></script>
 <link rel=stylesheet href="/static/pty-term.css">

@@ -19,6 +19,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+mod assets;
+
 use clap::Parser;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use serde::Deserialize;
@@ -89,6 +91,12 @@ enum Sub {
         /// command to run (default: $SHELL or nu). Everything after `--`.
         #[arg(trailing_var_arg = true)]
         cmd: Vec<String>,
+    },
+    /// Write the browser side (the <pty-term> element, its styles and font)
+    /// into DIR, for a server to serve. The page brings Datastar with Rocket.
+    Assets {
+        /// directory to write into; created if missing
+        dir: std::path::PathBuf,
     },
 }
 
@@ -309,6 +317,14 @@ fn arm_pdeathsig() {
 fn arm_pdeathsig() {}
 
 fn main() {
+    let sub = Args::parse().sub;
+    if let Sub::Assets { dir } = &sub {
+        if let Err(e) = assets::write(dir) {
+            eprintln!("ptyZZZ assets: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
     let Sub::Run {
         cols,
         rows,
@@ -320,7 +336,10 @@ fn main() {
         on_stdin_eof,
         die_with_parent,
         cmd,
-    } = Args::parse().sub;
+    } = sub
+    else {
+        unreachable!("assets returned above")
+    };
     if die_with_parent {
         arm_pdeathsig();
     }

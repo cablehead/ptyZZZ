@@ -60,6 +60,9 @@ http-nu --dev --datastar --services --store ./store 127.0.0.1:5111 serve.nu
 
 Open http://127.0.0.1:5111 and type into the page.
 
+To put a terminal in your own page, see [The browser side](#the-browser-side)
+under Install.
+
 The bigger demo is [examples/cube](examples/cube): six live terminals on a
 spinning CSS cube, all on one SSE connection. The front face is an interactive
 shell. [examples/panes](examples/panes) is a niri-style multiplexer: open,
@@ -121,6 +124,54 @@ cargo build --release            # binary lands at target/release/ptyZZZ
 Prebuilt binaries (macos-arm64, linux-arm64, linux-amd64) are on the
 [releases page](https://github.com/cablehead/ptyZZZ/releases), built by the
 shared [cablehead/pipelines](https://github.com/cablehead/pipelines) workflow.
+
+### The browser side
+
+A page needs `pty-term.js` and `pty-term.css`: the `<pty-term>` element, its
+styles and its font. The CSS loads the font relative to itself, so serve them
+under any path.
+
+The page brings [Datastar](https://data-star.dev) with
+[Rocket](https://data-star.dev/reference/rocket), and names the bundle
+`datastar` in an import map before any module script. `pty-term.js` imports
+`rocket` from that name, so it shares the page's one copy:
+
+```html
+<script type=importmap>{"imports": {"datastar": "/datastar-rocket@1.0.4.js"}}</script>
+<script type=module src="/datastar-rocket@1.0.4.js"></script>
+```
+
+With [http-nu](https://github.com/cablehead/http-nu#datastar-sdk),
+`--datastar-rocket` serves that bundle and `SCRIPT-DATASTAR-ROCKET` writes both
+tags.
+
+From a CDN, pinned to a release tag (jsDelivr serves it straight from GitHub;
+releases after v0.1.0 carry these files):
+
+```html
+<script type=module src="https://cdn.jsdelivr.net/gh/cablehead/ptyZZZ@<tag>/static/pty-term.js"></script>
+<link rel=stylesheet href="https://cdn.jsdelivr.net/gh/cablehead/ptyZZZ@<tag>/static/pty-term.css">
+```
+
+Or host them yourself. The binary carries the files that match its protocol:
+
+```bash
+ptyZZZ assets ./www/static    # serve ./www/static at /static, e.g. with http-nu's .static
+```
+
+```html
+<script type=module src="/static/pty-term.js"></script>
+<link rel=stylesheet href="/static/pty-term.css">
+```
+
+Either way, the terminal goes in the page as:
+
+```html
+<pty-term pane=local><div class=scroll><div id=grid-local></div></div></pty-term>
+```
+
+The server side is an `/sse` stream of the pane's frames and a `/input`
+endpoint for its keys; `serve.nu` is all of it for one terminal.
 
 ## The protocol
 
