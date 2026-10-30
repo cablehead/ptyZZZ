@@ -5,7 +5,7 @@ runtime. Each pane is this repo's `ptyZZZ` running `nu`. Close kills that pty.
 A refresh reconnects; an http-nu restart respawns a fresh `nu` in each
 surviving slot.
 
-Root `serve.nu` stays the static `PTYZZZ_BINS` demo. This example is the
+Root `serve.nu` is one terminal filling the window. This example is the
 dynamic multiplexer.
 
 ## Layout
