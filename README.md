@@ -60,6 +60,24 @@ http-nu --dev --datastar --services --store ./store 127.0.0.1:5111 serve.nu
 
 Open http://127.0.0.1:5111 and type into the page.
 
+To put a terminal in your own page, get the browser side from the binary:
+
+```bash
+ptyZZZ assets ./www/term
+```
+
+That writes `pty-term.js`, `pty-term.css`, the font and the Datastar Rocket
+bundle, matched to the protocol this binary speaks. Serve the directory under
+any path, for example with http-nu's `.static`, then:
+
+```html
+<script type=module src="/term/pty-term.js"></script>
+<link rel=stylesheet href="/term/pty-term.css">
+<pty-term pane=local><div class=scroll><div id=grid-local></div></div></pty-term>
+```
+
+`serve.nu` is the whole server side for one terminal.
+
 The bigger demo is [examples/cube](examples/cube): six live terminals on a
 spinning CSS cube, all on one SSE connection. The front face is an interactive
 shell. [examples/panes](examples/panes) is a niri-style multiplexer: open,

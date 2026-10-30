@@ -33,7 +33,7 @@
 //
 // Styles: static/pty-term.css.
 
-import { rocket } from "/static/vendor/datastar-rocket@1.0.4.js";
+import { rocket } from "./vendor/datastar-rocket@1.0.4.js";
 
 // The client is byte-blind: it ships semantic key events and the emulator
 // encodes them against its live input modes (application cursor keys,
