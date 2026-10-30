@@ -89,7 +89,7 @@ const SVC = '{
         let e = try { $l | from json } catch { null }
         if $e == null { return }
         match $e.t {
-          "screen" => ( $e.html | .append "PFX.screen" --ttl last:1 )
+          "screen" => ( $e.html | .append "PFX.screen" --ttl last:1 --meta {seqno: $e.seqno} )
           "diff"   => ( null | .append "PFX.diff" --ttl ephemeral --meta {body: $l} )
           "exit"   => ( {code: $e.code} | to json | .append "PFX.exit" --ttl last:1 )
           _ => null
@@ -224,7 +224,8 @@ let PAGE = (
     # (last:1), then live frames. A keyframe is one morph of its pane's
     # grid div. A diff expands to up to three patch events: changed rows +
     # cursor (morph by id), appended rows (append into the pane's grid),
-    # trimmed rows (remove by id).
+    # trimmed rows (remove by id). Diffs are ephemeral, so the fold keeps the
+    # seqno last sent per pane and forwards a diff only when its base matches.
     #
     # The follow starts at the oldest pane's keyframe, as in the panes
     # example, so a connect replays only what came after it rather than the
@@ -237,7 +238,7 @@ let PAGE = (
       # collected and never end.
       if ($seeds | is-not-empty) { .cat --follow --from ($seeds | get id | sort | first) } else if $head != null { .cat --follow --after $head } else { .cat --follow }
       | where topic in $topics or topic == "xs.threshold"
-      | each {|f|
+      | generate {|f, sent|
           if $f.topic == "xs.threshold" {
             # The replay is done and this follow is live, so a keyframe
             # requested now lands on this stream, with no diffs lost between
@@ -246,12 +247,24 @@ let PAGE = (
             for p in $pane_names {
               '{"t":"screen"}' + "\n" | .append $"pty-($p).send" --ttl ephemeral | ignore
             }
-            []
-          } else if ($f.topic | str ends-with ".screen") {
-            [(.cas $f.hash | to datastar-patch-elements)]
-          } else {
-            let d = $f.meta.body | from json
-            [
+            return {next: $sent}
+          }
+          let pane = $f.topic | split row "." | first
+          if ($f.topic | str ends-with ".screen") {
+            # A keyframe is self-contained: adopt its seqno as the new basis.
+            return {
+              out: [(.cas $f.hash | to datastar-patch-elements)]
+              next: ($sent | upsert $pane $f.meta.seqno?)
+            }
+          }
+          let d = $f.meta.body | from json
+          # Only forward a diff that chains to the last frame sent. Anything
+          # else means frames were missed (diffs are ephemeral); drop it and
+          # wait for the healing keyframe.
+          let held = $sent | get -o $pane
+          if $held == null or $d.base != $held { return {next: $sent} }
+          {
+            out: ([
               (if ($d.patch | is-not-empty) { $d.patch | to datastar-patch-elements })
               (if ($d.append | is-not-empty) {
                 $d.append | to datastar-patch-elements --mode append --selector $"#($d.target)"
@@ -259,9 +272,10 @@ let PAGE = (
               (if ($d.trim | is-not-empty) {
                 "" | to datastar-patch-elements --mode remove --selector ($d.trim | each {|id| $"#($id)"} | str join ",")
               })
-            ] | compact
+            ] | compact)
+            next: ($sent | upsert $pane $d.seqno)
           }
-        }
+        } {}
       | flatten
       | to sse
       | metadata set --content-type "text/event-stream"
