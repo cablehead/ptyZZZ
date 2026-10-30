@@ -249,6 +249,19 @@ rocket("pty-term", {
       removeEventListener("pointercancel", settle, true);
     });
 
+    // Shift down shows the text cursor over a grabbed pane (see pty-term.css).
+    const shiftState = (ev) => host.classList.toggle("shift", ev.shiftKey);
+    addEventListener("keydown", shiftState, true);
+    addEventListener("keyup", shiftState, true);
+    box.addEventListener("pointermove", shiftState);
+    const shiftOff = () => host.classList.remove("shift");
+    addEventListener("blur", shiftOff);
+    cleanup(() => {
+      removeEventListener("keydown", shiftState, true);
+      removeEventListener("keyup", shiftState, true);
+      removeEventListener("blur", shiftOff);
+    });
+
     // Mouse: the pane captures it only while the app has grabbed it (the
     // cursor's data-mouse-grabbed), and never with Shift held, which keeps
     // native text selection and scrollback. See PROTOCOL.md {t:mouse}.
