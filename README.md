@@ -128,8 +128,22 @@ shared [cablehead/pipelines](https://github.com/cablehead/pipelines) workflow.
 ### The browser side
 
 A page needs `pty-term.js` and `pty-term.css`: the `<pty-term>` element, its
-styles, its font and the Datastar Rocket bundle it imports. They load
-everything relative to themselves, so serve them under any path.
+styles and its font. The CSS loads the font relative to itself, so serve them
+under any path.
+
+The page brings [Datastar](https://data-star.dev) with
+[Rocket](https://data-star.dev/reference/rocket), and names the bundle
+`datastar` in an import map before any module script. `pty-term.js` imports
+`rocket` from that name, so it shares the page's one copy:
+
+```html
+<script type=importmap>{"imports": {"datastar": "/datastar-rocket@1.0.4.js"}}</script>
+<script type=module src="/datastar-rocket@1.0.4.js"></script>
+```
+
+With [http-nu](https://github.com/cablehead/http-nu#datastar-sdk),
+`--datastar-rocket` serves that bundle and `SCRIPT-DATASTAR-ROCKET` writes both
+tags.
 
 From a CDN, pinned to a release tag (jsDelivr serves it straight from GitHub;
 releases after v0.1.0 carry these files):

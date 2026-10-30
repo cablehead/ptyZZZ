@@ -91,8 +91,8 @@ enum Sub {
         #[arg(trailing_var_arg = true)]
         cmd: Vec<String>,
     },
-    /// Write the browser side (the <pty-term> element, its styles, font and
-    /// the Datastar Rocket bundle) into DIR, for a server to serve.
+    /// Write the browser side (the <pty-term> element, its styles and font)
+    /// into DIR, for a server to serve. The page brings Datastar with Rocket.
     Assets {
         /// directory to write into; created if missing
         dir: std::path::PathBuf,

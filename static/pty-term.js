@@ -32,8 +32,14 @@
 //   The host carries the class `unstuck` while the user has scrolled away.
 //
 // Styles: static/pty-term.css.
+//
+// The page brings Datastar with Rocket and names it in an import map, so
+// this element shares the page's one copy instead of loading its own:
+//   <script type=importmap>{"imports": {"datastar": "/datastar-rocket@1.0.4.js"}}</script>
+// http-nu's --datastar-rocket serves that bundle, and SCRIPT-DATASTAR-ROCKET
+// writes both tags.
 
-import { rocket } from "./vendor/datastar-rocket@1.0.4.js";
+import { rocket } from "datastar";
 
 // The client is byte-blind: it ships semantic key events and the emulator
 // encodes them against its live input modes (application cursor keys,
