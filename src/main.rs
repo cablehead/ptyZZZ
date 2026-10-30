@@ -120,6 +120,9 @@ enum Cmd {
         #[serde(default)]
         mods: u8,
     },
+    /// the viewer gained or lost focus; reported to the app as CSI I / CSI O
+    /// when it enabled focus tracking (?1004h)
+    Focus { on: bool },
     Resize { cols: u16, rows: u16 },
     /// ask for a keyframe now: a joiner's fresh join point, instead of
     /// waiting out the healing interval
@@ -491,6 +494,9 @@ fn main() {
                             mods,
                         );
                         let _ = term.lock().unwrap().mouse_event(event);
+                    }
+                    Ok(Cmd::Focus { on }) => {
+                        term.lock().unwrap().focus_changed(on);
                     }
                     Ok(Cmd::Resize { cols, rows }) => {
                         let _ = master.lock().unwrap().resize(PtySize {
@@ -1417,6 +1423,27 @@ mod tests {
         t.mouse_event(event).unwrap();
         let want = b"\x1b[<16;13;5M";
         assert_eq!(captured(&sink, want.len()), want);
+    }
+
+    #[test]
+    fn focus_reports_only_once_the_app_asks() {
+        let sink = Arc::new(Mutex::new(Vec::new()));
+        let mut t = Terminal::new(
+            TerminalSize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0, dpi: 0 },
+            Arc::new(MinimalConfig { scrollback: 100 }),
+            "ptyZZZ",
+            "0",
+            Box::new(Capture(sink.clone())),
+        );
+        let cmd: Cmd = serde_json::from_str(r#"{"t":"focus","on":false}"#).unwrap();
+        assert!(matches!(cmd, Cmd::Focus { on: false }));
+        t.focus_changed(false);
+        t.focus_changed(true);
+        t.advance_bytes(b"\x1b[?1004h");
+        t.focus_changed(false);
+        t.focus_changed(true);
+        let want = b"\x1b[O\x1b[I";
+        assert_eq!(captured(&sink, want.len()), want, "nothing before ?1004h");
     }
 
     #[test]

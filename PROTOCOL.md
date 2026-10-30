@@ -11,6 +11,7 @@ a nushell service closure adapts these lines to/from frames.
     {"t":"mouse","kind":"press","button":"left","x":12,"y":4,"mods":0}
     {"t":"mouse","kind":"move","x":13,"y":4,"mods":0}
     {"t":"mouse","kind":"release","button":"left","x":13,"y":4,"mods":0}
+    {"t":"focus","on":true}         the viewer gained (or lost) focus
     {"t":"resize","cols":80,"rows":24}
     {"t":"screen"}                  emit a keyframe now
 
@@ -32,6 +33,11 @@ The emulator encodes the event using the application's active mouse protocol.
 Clients should only capture mouse input when the rendered cursor element has
 `data-mouse-grabbed="true"`; Shift should bypass capture for native text
 selection and scrollback.
+
+`focus` tells the emulator the viewer gained or lost focus. It reports
+`CSI I` / `CSI O` to the application only when the application enabled focus
+tracking (`?1004h`). Losing focus also releases any mouse buttons the
+application saw pressed.
 
 `screen` asks for a keyframe on the next emit, whether or not anything
 changed. An adapter sends it when a subscriber joins: the stored keyframe can
