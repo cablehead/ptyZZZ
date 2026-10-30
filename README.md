@@ -142,12 +142,12 @@ releases after v0.1.0 carry these files):
 Or host them yourself. The binary carries the files that match its protocol:
 
 ```bash
-ptyZZZ assets ./www/term    # serve ./www/term at /term, e.g. with http-nu's .static
+ptyZZZ assets ./www/static    # serve ./www/static at /static, e.g. with http-nu's .static
 ```
 
 ```html
-<script type=module src="/term/pty-term.js"></script>
-<link rel=stylesheet href="/term/pty-term.css">
+<script type=module src="/static/pty-term.js"></script>
+<link rel=stylesheet href="/static/pty-term.css">
 ```
 
 Either way, the terminal goes in the page as:
