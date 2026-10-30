@@ -1,0 +1,53 @@
+/* Styles for <pty-term> (static/pty-term.js): the terminal grid ptyZZZ
+   renders, wherever a page puts the element. Pages add their own layout. */
+
+/* Vendored Adwaita Mono Nerd Font (Mono variant: single-width icons). A
+   complete monospace face with box-drawing, block, braille, powerline and
+   Nerd Font icon glyphs all at uniform advance, so grid geometry never
+   depends on the OS fallback font. Both weights are declared: with only a
+   regular face WebKit fakes bold by widening every advance, which pushes a
+   row with bold in it several cells wide. */
+@font-face{font-family:"AdwaitaMonoNerd";font-weight:normal;font-style:normal;font-display:swap;
+  src:url("fonts/AdwaitaMonoNerdFontMono-Regular.woff2") format("woff2")}
+@font-face{font-family:"AdwaitaMonoNerd";font-weight:bold;font-style:normal;font-display:swap;
+  src:url("fonts/AdwaitaMonoNerdFontMono-Bold.woff2") format("woff2")}
+
+:root{--term-font:"AdwaitaMonoNerd",monospace;--term-bg:#111;--term-fg:#ddd;
+  --c0:#000;--c1:#cd0000;--c2:#00cd00;--c3:#cdcd00;--c4:#1e90ff;--c5:#cd00cd;
+  --c6:#00cdcd;--c7:#e5e5e5;--c8:#4d4d4d;--c9:#ff5454;--c10:#54ff54;--c11:#ffff54;
+  --c12:#5454ff;--c13:#ff54ff;--c14:#54ffff;--c15:#fff;
+  /* One row pitch: the rows' height and the cursor's step down the grid
+     must be the same value, or the cursor drifts off its row a little more
+     on every row. 18px is what Adwaita Mono asks for at 14px. */
+  --cell-h:18px}
+
+/* min-width/height:0: a flex item otherwise refuses to shrink below its
+   content, and a tall grid would push its siblings offscreen; the scroll
+   box must shrink so it scrolls instead. The element pins the box to whole
+   rows itself. */
+pty-term{flex:1;display:flex;flex-direction:column;min-height:0;min-width:0;
+  background:var(--term-bg);color:var(--term-fg);font:14px/var(--cell-h) var(--term-font)}
+pty-term .scroll{flex:1;overflow-y:auto;position:relative;min-height:0}
+pty-term .scroll>[id^="grid-"]{white-space:pre;padding:8px;position:relative;box-sizing:border-box}
+pty-term .row{height:var(--cell-h)}
+pty-term a{color:inherit;text-decoration:underline}
+/* The composition box: offscreen via opacity, not display:none, which
+   cannot hold focus. */
+pty-term .compose{position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;padding:0;border:0;
+  outline:0;resize:none;overflow:hidden;z-index:-1}
+
+/* Inert cursor: hollow outline. The focused pane's cursor is live: solid,
+   XOR-inverted over the glyph, blinking -- the tell for where keys land. */
+pty-term .cursor{position:absolute;top:calc(8px + var(--cursor-row)*var(--cell-h));left:calc(8px + var(--cursor-col)*1ch);
+  width:1ch;height:var(--cell-h);pointer-events:none;box-shadow:inset 0 0 0 1px var(--term-fg)}
+pty-term:focus-within .cursor{background:var(--term-fg);box-shadow:none;mix-blend-mode:difference;
+  animation:cursor-blink 1s steps(2) infinite}
+@keyframes cursor-blink{50%{opacity:0.4}}
+
+pty-term .wc{display:inline-block;width:calc(var(--w)*1ch)}
+pty-term .sb{font-weight:bold}pty-term .si{font-style:italic}pty-term .su{text-decoration:underline}
+pty-term .sx{visibility:hidden}pty-term .ss{text-decoration:line-through}
+pty-term .f1{color:var(--c1)}pty-term .f2{color:var(--c2)}pty-term .f3{color:var(--c3)}pty-term .f4{color:var(--c4)}
+pty-term .f5{color:var(--c5)}pty-term .f6{color:var(--c6)}pty-term .f7{color:var(--c7)}
+pty-term .b1{background:var(--c1)}pty-term .b2{background:var(--c2)}pty-term .b3{background:var(--c3)}pty-term .b4{background:var(--c4)}
+pty-term .b5{background:var(--c5)}pty-term .b6{background:var(--c6)}pty-term .b7{background:var(--c7)}

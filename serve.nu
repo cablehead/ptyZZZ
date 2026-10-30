@@ -116,26 +116,10 @@ const TMPL = r#'<!doctype html>
 <html><head><meta charset=utf-8>
 <script type=module src="/static/vendor/datastar-rocket@1.0.4.js"></script>
 <script type=module src="/static/pty-term.js"></script>
+<link rel=stylesheet href="/static/pty-term.css">
 <style>
-  /* Vendored Adwaita Mono Nerd Font (Mono variant: single-width icons).
-     A complete monospace face with box-drawing, block, braille, powerline
-     and Nerd Font icon glyphs all at uniform advance, so grid geometry
-     never depends on the OS fallback font. Both weights are declared: with
-     only a regular face WebKit fakes bold by widening every advance, which
-     pushes a row with bold in it several cells wide. */
-  @font-face{font-family:"AdwaitaMonoNerd";font-weight:normal;font-style:normal;font-display:swap;
-    src:url("/fonts/AdwaitaMonoNerdFontMono-Regular.woff2") format("woff2")}
-  @font-face{font-family:"AdwaitaMonoNerd";font-weight:bold;font-style:normal;font-display:swap;
-    src:url("/fonts/AdwaitaMonoNerdFontMono-Bold.woff2") format("woff2")}
-  :root{--term-font:"AdwaitaMonoNerd",monospace;--term-bg:#111;--term-fg:#ddd;
-    --c0:#000;--c1:#cd0000;--c2:#00cd00;--c3:#cdcd00;--c4:#1e90ff;--c5:#cd00cd;
-    --c6:#00cdcd;--c7:#e5e5e5;--c8:#4d4d4d;--c9:#ff5454;--c10:#54ff54;--c11:#ffff54;
-    --c12:#5454ff;--c13:#ff54ff;--c14:#54ffff;--c15:#fff;
-    /* One row pitch, as in the panes example: the rows' height and the
-       cursor's step down the grid must be the same value, or the cursor
-       drifts off its row a little more on every row. */
-    --cell-h:18px;}
-  body{background:#000;color:var(--term-fg);margin:0;font:14px/var(--cell-h) var(--term-font);overflow:hidden}
+  /* The layout. The terminal itself is styled by static/pty-term.css. */
+  body{background:#000;color:#ddd;margin:0;font:14px var(--term-font);overflow:hidden}
   #panes{display:flex;height:100vh}
   #panes.stacked{flex-direction:column}
   /* min-width/height:0: flex items otherwise refuse to shrink below their
@@ -148,26 +132,6 @@ const TMPL = r#'<!doctype html>
   #split:hover{color:#fff}
   .pane:focus-within .label{color:#fff;background:#333}
   .label{flex:none;font-size:11px;color:#888;background:#1a1a1a;padding:2px 8px}
-  pty-term{flex:1;display:flex;flex-direction:column;min-height:0}
-  .scroll{flex:1;overflow-y:auto;position:relative;min-height:0}
-  pty-term .compose{position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;padding:0;border:0;outline:0;resize:none;overflow:hidden;z-index:-1}
-  .scroll>[id^="grid-"]{white-space:pre;padding:8px;position:relative;box-sizing:border-box}
-  .row{height:var(--cell-h)}
-  .pane a{color:inherit;text-decoration:underline}
-  /* Inert cursor: hollow outline. The focused pane's cursor is live: solid,
-     XOR-inverted over the glyph, blinking -- the tell for where keys land. */
-  .cursor{position:absolute;top:calc(8px + var(--cursor-row)*var(--cell-h));left:calc(8px + var(--cursor-col)*1ch);
-    width:1ch;height:var(--cell-h);pointer-events:none;box-shadow:inset 0 0 0 1px var(--term-fg)}
-  .pane:focus-within .cursor{background:var(--term-fg);box-shadow:none;mix-blend-mode:difference;
-    animation:cursor-blink 1s steps(2) infinite}
-  @keyframes cursor-blink{50%{opacity:0.4}}
-  .wc{display:inline-block;width:calc(var(--w)*1ch)}
-  .sb{font-weight:bold}.si{font-style:italic}.su{text-decoration:underline}
-  .sx{visibility:hidden}.ss{text-decoration:line-through}
-  .f1{color:var(--c1)}.f2{color:var(--c2)}.f3{color:var(--c3)}.f4{color:var(--c4)}
-  .f5{color:var(--c5)}.f6{color:var(--c6)}.f7{color:var(--c7)}
-  .b1{background:var(--c1)}.b2{background:var(--c2)}.b3{background:var(--c3)}.b4{background:var(--c4)}
-  .b5{background:var(--c5)}.b6{background:var(--c6)}.b7{background:var(--c7)}
 </style></head>
 <body data-init="@get('/sse')">
   <div id=panes>__PANES_HTML__</div>
@@ -245,7 +209,7 @@ let PAGE = (
   $TMPL
   | str replace "__PANES_HTML__" (
       $panes | each {|p|
-        $"<div class=pane data-pane=($p.name)><div class=label>($p.name)</div><pty-term pane=($p.name) NOFIT></pty-term></div>"
+        $"<div class=pane data-pane=($p.name)><div class=label>($p.name)</div><pty-term pane=($p.name)><div class=scroll><div id=grid-($p.name)>connecting...</div></div></pty-term></div>"
       } | str join ""
     )
 )
@@ -253,10 +217,7 @@ let PAGE = (
 {|req|
   dispatch $req [
     (route {method: "GET", path: "/"} {|req ctx|
-      # ?nofit observes without resizing the ptys -- for screenshots and
-      # debugging; a second viewer's fit would otherwise fight this one's.
-      let nofit = if ($req.query? | default {} | columns | any {|k| $k == "nofit" }) { "nofit" } else { "" }
-      $PAGE | str replace --all "NOFIT" $nofit | metadata set --content-type "text/html"
+      $PAGE | metadata set --content-type "text/html"
     })
 
     # One stream for every pane: each stored keyframe replays first
@@ -311,12 +272,16 @@ let PAGE = (
       }
     })
 
-    # The pty-term element and the vendored Datastar Rocket bundle.
+    # The pty-term element, its styles and font, and the vendored Datastar
+    # Rocket bundle.
     (route {method: "GET", path-matches: "/static/:file"} {|req ctx|
       .static ($HERE | path join "static") $"/($ctx.file)"
     })
     (route {method: "GET", path-matches: "/static/vendor/:file"} {|req ctx|
       .static ($HERE | path join "static" "vendor") $"/($ctx.file)"
+    })
+    (route {method: "GET", path-matches: "/static/fonts/:file"} {|req ctx|
+      .static ($HERE | path join "static" "fonts") $"/($ctx.file)"
     })
 
     # Vendored terminal font. .static sets the content-type.
