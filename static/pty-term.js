@@ -17,9 +17,9 @@
 //
 // The element owns everything else one pane needs: keys and composed text,
 // paste, mouse and focus reports, the send queue to /input, fitting the pty
-// to its box, and pinning the view to the live output. The page owns the stream and the layout. Keys
-// reach a pane through the browser's focus: the pane listens on itself, so
-// whichever pane holds focus gets what is typed.
+// to its box, and pinning the view to the live output. The page owns the
+// stream and the layout. Keys reach a pane through the browser's focus: the
+// pane listens on itself, so whichever pane holds focus gets what is typed.
 //
 // Props:
 //   pane   the pane name; the server's /input?pane= and grid-<pane> id
