@@ -1,66 +1,18 @@
-const NAMED = ["ArrowUp","ArrowDown","ArrowLeft","ArrowRight","Home","End",
-  "PageUp","PageDown","Insert","Delete","Enter","Tab","Backspace","Escape"];
-const NOFIT = new URLSearchParams(location.search).has("nofit");
+// The layout: columns of panes, selection, zoom, modes and the actions panel.
+// Everything inside one pane (keys, paste, fit, pinning to live output) is
+// ptyZZZ's <pty-term> element, static/pty-term.js at the repo root.
 const ACTIONS_HINT_MS = 150;
 
-function keyEvent(ev) {
-  if (["Shift","Control","Alt","Meta","CapsLock"].includes(ev.key)) return null;
-  const mods = (ev.shiftKey?1:0)|(ev.altKey?2:0)|(ev.ctrlKey?4:0)|(ev.metaKey?8:0);
-  if (ev.key.length === 1) {
-    if (ev.metaKey) return null;
-    if (ev.altKey && !ev.ctrlKey) {
-      const codeLetter = /^Key([A-Z])$/.exec(ev.code)?.[1]?.toLowerCase();
-      if (!(codeLetter && ev.key.toLowerCase() === codeLetter)) {
-        return {t:"key", key: ev.key, mods: mods & ~2};
-      }
-    }
-    return {t:"key", key: ev.key, mods};
-  }
-  if (NAMED.includes(ev.key) || /^F\d+$/.test(ev.key)) {
-    return {t:"key", key: ev.key, mods};
-  }
-  return null;
+function termOf(id) {
+  return document.querySelector(`pty-term[pane="${id}"]`);
 }
-
-const queues = {};
-function send(pane, frame) {
-  if (!pane) return;
-  const s = queues[pane] ??= {items: [], sending: false};
-  s.items.push(JSON.stringify(frame));
-  drain(pane);
-}
-async function drain(pane) {
-  const s = queues[pane];
-  if (s.sending) return;
-  s.sending = true;
-  while (s.items.length) {
-    const batch = s.items.splice(0).join("\n") + "\n";
-    try { await fetch("/input?pane=" + pane, {method:"POST", body: batch}); } catch {}
-  }
-  s.sending = false;
-}
-
-const ta = document.createElement("textarea");
-ta.id = "compose";
-ta.setAttribute("aria-hidden", "true");
-ta.tabIndex = -1;
-ta.autocapitalize = "off"; ta.autocomplete = "off"; ta.spellcheck = false;
-ta.style.cssText = "position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;padding:0;border:0;outline:0;resize:none;overflow:hidden;z-index:-1;";
-document.body.appendChild(ta);
-let composing = false;
-ta.addEventListener("compositionstart", () => { composing = true; });
-ta.addEventListener("compositionend", ev => {
-  composing = false;
-  const data = ev.data || ta.value;
-  ta.value = "";
-  if (data && mode === "focus") send(selected, {t:"input", b: data});
-});
+// Typing goes to whichever pane holds focus, so focus mode parks it on the
+// selected pane and navigate mode takes it away from every pane.
 function parkFocus() {
-  requestAnimationFrame(() => {
-    const sel = getSelection();
-    if (sel && !sel.isCollapsed) return;
-    try { ta.focus(); } catch {}
-  });
+  if (mode === "focus" && selected) termOf(selected)?.park?.();
+}
+function leavePane() {
+  if (document.activeElement?.closest("pty-term")) document.activeElement.blur();
 }
 
 let mode = "navigate";
@@ -86,180 +38,22 @@ function setMode(next) {
   mode = next;
   document.body.classList.toggle("mode-focus", mode === "focus");
   document.getElementById("mode-badge").textContent = mode;
+  if (mode === "navigate") leavePane();
 }
 function setSelected(id, {focus = false, scroll = true} = {}) {
   selected = id || "";
   try { sessionStorage.setItem("panes.selected", selected); } catch {}
   paneEls().forEach(p => p.classList.toggle("selected", p.dataset.pane === selected));
-  if (focus) setMode("focus");
+  if (focus) { setMode("focus"); parkFocus(); }
   if (!selected) { setZoom(false); return; }
   // scroll:false is wireAll re-asserting the current selection on every frame,
-  // not a move. Only a deliberate move refits.
-  if (!scroll) return;
-  // Zoom rides the .selected class, so moving the selection moves the zoom.
-  // The pane arriving was hidden: it needs a fit for its new size and a re-pin.
-  if (zoom) { fitNow(); restick(); }
-  else reveal(selected);
+  // not a move. Zoom rides the .selected class, so moving the selection moves
+  // the zoom; the pane arriving refits itself when its box gets a size.
+  if (!scroll || zoom) return;
+  reveal(selected);
 }
 function syncEmpty() {
   document.getElementById("empty").hidden = !!document.querySelector(".column");
-}
-
-// One probe for the whole strip: every grid shares the same font metrics.
-// It carries the grid's own line-height so a measured row matches a rendered
-// one exactly -- measuring inside .scroll picked up the chrome line-height.
-// Cached, because the probe is a write into the tree the MutationObserver
-// watches: an uncached fit() mutates, the observer sees it and schedules
-// another fit, and the pair free-runs at the debounce interval. Metrics only
-// change when the font or the device pixel ratio does, so both invalidate it.
-let cellCache = null;
-function measureCell() {
-  if (cellCache) return cellCache;
-  const probe = document.createElement("div");
-  probe.className = "cell-probe";
-  probe.textContent = "M".repeat(80);
-  document.body.appendChild(probe);
-  const r = probe.getBoundingClientRect();
-  probe.remove();
-  if (!r.width || !r.height) return {w: 0, h: 0};
-  cellCache = {w: r.width / 80, h: r.height};
-  return cellCache;
-}
-
-const lastFit = {};
-function fit() {
-  if (NOFIT) return;
-  const cell = measureCell();
-  if (!cell.w || !cell.h) return;
-  for (const p of paneEls()) {
-    const name = p.dataset.pane;
-    const box = p.querySelector(".scroll");
-    if (!box) continue;
-    // A zoomed-away pane measures zero. Without this the floors below would
-    // resize its pty to 20x5 and reflow its scrollback out of sight.
-    if (!box.clientWidth || !box.clientHeight) continue;
-    // Height comes from the pane, not from the box: we set the box's own
-    // height below, so reading it back would freeze the row count. The label
-    // sits above .scroll, so subtract the siblings that precede it.
-    let head = 0;
-    for (let s = p.firstElementChild; s && s !== box; s = s.nextElementSibling) {
-      head += s.offsetHeight || 0;
-    }
-    const cols = Math.max(20, Math.floor((box.clientWidth - 16) / cell.w));
-    const rows = Math.max(5, Math.floor((p.clientHeight - head) / cell.h));
-    // Pin the box to a whole number of rows. The sub-row remainder sits below
-    // it showing the pane background, instead of clipping a half row at the
-    // top once the pane is pinned to the bottom.
-    const h = rows * cell.h + "px";
-    if (box.style.height !== h) {
-      box.style.flex = "none";
-      box.style.height = h;
-      // Shrinking the box leaves scrollTop short of the new bottom.
-      if (stick[name]) stickToBottom(name);
-    }
-    const prev = lastFit[name];
-    if (!prev || prev.cols !== cols || prev.rows !== rows) {
-      lastFit[name] = {cols, rows};
-      send(name, {t:"resize", cols, rows});
-    }
-  }
-}
-let fitTimer;
-// Window drags fire continuously, and every event that crosses a cell boundary
-// would cost a resize frame and a forced keyframe, so they coalesce.
-function scheduleFit() {
-  clearTimeout(fitTimer);
-  fitTimer = setTimeout(fit, 80);
-}
-// A discrete toggle has one known final geometry. There is nothing to coalesce
-// and the 80ms is pure latency: it was the whole gap between the pane resizing
-// and the pty catching up (80ms of a measured 96ms).
-function fitNow() {
-  clearTimeout(fitTimer);
-  fit();
-}
-
-// Auto-stick to the bottom, per pane. `stick` means "pinned to the live
-// prompt".
-//
-// Every scroll event is either ours or the user's, and the difference is one
-// comparison: does scrollTop still hold the value we put there? Appending rows
-// moves scrollHeight, never scrollTop, so growth cannot blur that answer.
-//
-// An earlier version listened for the gestures instead -- wheel, touchstart, a
-// pointerdown past the scrollbar -- and held the pin off until `scrollend`.
-// The trouble is that a held pane is never re-pinned, so every arriving row
-// moved the bottom away from the user, and "are you at the bottom" asked after
-// the gesture answered about a place that no longer existed. Ask before the
-// content changes and the question stays answerable.
-//
-// The old rule -- keep the cursor visible -- is not the same thing. A TUI that
-// draws rows below its cursor (the Claude Code CLI input box, with its hint
-// line under it) satisfies "cursor in view" while its last rows sit below the
-// fold, so the pane stopped tracking.
-const stick = {};
-// The scrollTop we last wrote, per pane. Appending rows changes scrollHeight
-// but never scrollTop, so this is the one comparison content growth cannot
-// perturb: if scrollTop still reads what we put there, the user has not
-// touched it. That answers "was that scroll the user or us" outright, which
-// is what the hold, the gesture listeners and the direction tracking were all
-// guessing at.
-const lastWrote = {};
-
-// A deliberate "catch me up" from the follow button.
-function follow(name) {
-  setStick(name, true);
-  toBottom(name);
-}
-
-function scrollBox(name) {
-  return document.querySelector(`.pane[data-pane="${name}"] .scroll`);
-}
-// Single writer for stick, so the pane's class always agrees with it and the
-// follow button can key off one thing.
-function setStick(name, on) {
-  stick[name] = on;
-  paneOf(name)?.classList.toggle("unstuck", on === false);
-}
-// The scrollTop that puts the live output at the bottom of the view. Not the end
-// of the scroll range: a resize grows the pty's viewport before the app has drawn
-// into the new rows, so the grid legitimately ends in blank lines and the range
-// ends below anything worth looking at. The cursor counts as content, so a TUI
-// that parks it under its last text still keeps it in view.
-function bottomTarget(box) {
-  const boxTop = box.getBoundingClientRect().top;
-  const bottomOf = el => el.getBoundingClientRect().bottom - boxTop + box.scrollTop;
-  let target = 0;
-  const rows = box.querySelectorAll(".row");
-  // Blank rows cluster at the end, so this scan almost always stops immediately.
-  for (let i = rows.length - 1; i >= 0; i--) {
-    if (rows[i].textContent.trim() !== "") { target = bottomOf(rows[i]); break; }
-  }
-  const cur = box.querySelector(".cursor");
-  if (cur) target = Math.max(target, bottomOf(cur));
-  const max = box.scrollHeight - box.clientHeight;
-  return target ? Math.max(0, Math.min(Math.ceil(target) - box.clientHeight, max)) : max;
-}
-// Shares bottomTarget with stickToBottom on purpose: if these two disagreed,
-// every re-pin would land somewhere atBottom calls "scrolled away" and unstick
-// the pane it had just pinned.
-function atBottom(box) {
-  return box.scrollTop >= bottomTarget(box) - 8;
-}
-// Re-pin a pane as output arrives. A pane the user scrolled away from is not
-// stuck, so this does nothing to it.
-function stickToBottom(name) {
-  if (stick[name]) toBottom(name);
-}
-// The only writer of scrollTop, and it records what it wrote. Instant, never
-// smooth: a smooth scroll travels through positions nobody wrote, and every
-// one of them would read as the user having moved.
-function toBottom(name) {
-  const box = scrollBox(name);
-  if (!box) return;
-  const top = bottomTarget(box);
-  if (box.scrollTop !== top) box.scrollTop = top;
-  lastWrote[name] = top;
 }
 
 function reveal(id) {
@@ -270,47 +64,18 @@ function reveal(id) {
   });
 }
 // Zoom is per viewer, like `selected`: it changes no layout and must not
-// outlive a reload of the strip, so it stays out of the store.
+// outlive a reload of the strip, so it stays out of the store. Each pane
+// refits and re-pins itself when zoom changes its box.
 function setZoom(on) {
   zoom = !!on && !!selected;
   try { sessionStorage.setItem("panes.zoom", zoom ? "1" : ""); } catch {}
   document.body.classList.toggle("zoom", zoom);
-  fitNow();
-  restick();
-}
-// A hidden pane has no scrollHeight, so stickToBottom cannot run on it while
-// it is zoomed away. Re-pin every stuck pane once the new layout has settled.
-function restick() {
-  requestAnimationFrame(() => {
-    for (const p of paneEls()) {
-      const name = p.dataset.pane;
-      if (stick[name]) stickToBottom(name);
-    }
-    if (!zoom && selected) reveal(selected);
-  });
-}
-function wirePane(p) {
-  const name = p.dataset.pane;
-  if (!name || p.dataset.wired) return;
-  p.dataset.wired = "1";
-  setStick(name, true);
-  const box = p.querySelector(".scroll");
-  if (!box) return;
-  // The user moved this pane if, and only if, scrollTop is not where we left
-  // it. Ask where they landed at that moment, before the next row arrives and
-  // moves the bottom out from under the answer.
-  box.addEventListener("scroll", () => {
-    if (box.scrollTop === lastWrote[name]) return;
-    setStick(name, atBottom(box));
-  }, {passive: true});
-
+  if (!zoom && selected) requestAnimationFrame(() => reveal(selected));
 }
 function wireAll() {
-  paneEls().forEach(wirePane);
   syncEmpty();
   if (!selected || !paneOf(selected)) setSelected(firstPane(), {scroll: false});
   else setSelected(selected, {scroll: false});
-  scheduleFit();
 }
 
 const strip = document.getElementById("strip");
@@ -323,8 +88,7 @@ strip.addEventListener("mousedown", e => {
 strip.addEventListener("click", e => {
   const btn = e.target.closest(".follow");
   if (btn) {
-    const name = btn.closest(".pane")?.dataset.pane;
-    if (name) follow(name);
+    btn.closest(".pane")?.querySelector("pty-term")?.follow?.();
     e.stopPropagation();
     return;
   }
@@ -340,72 +104,9 @@ document.getElementById("mode-badge").addEventListener("click", () => {
   if (mode === "focus" && selected) parkFocus();
 });
 
-// An unpinned pane relies on scroll anchoring to hold the line under the
-// user's eye as rows trim off the top (see .unstuck in panes.css). Safari has
-// no scroll anchoring, so there we do the browser's job by hand: count the
-// rows a batch removed and add their height back to scrollTop.
-const ANCHORS = CSS.supports("overflow-anchor", "auto");
-// Only a trim shifts content: rows come off the top, appended rows land below
-// the view. A row both removed and re-added in one batch is a morph, not a
-// trim, so it nets out.
-function holdLine(name, removed, added) {
-  const box = scrollBox(name);
-  if (!box || box.scrollTop === 0) return;
-  let n = 0;
-  for (const id of removed) if (!added.has(id)) n++;
-  if (!n) return;
-  const h = box.querySelector(".row")?.offsetHeight || measureCell().h;
-  box.scrollTop = Math.max(0, box.scrollTop - n * h);
-  lastWrote[name] = box.scrollTop;
-}
-function rowIds(nodes, into) {
-  for (const n of nodes) {
-    if (n.nodeType === 1 && n.classList.contains("row")) into.add(n.id);
-  }
-}
-
-// Every pane tracks its own output, not just the selected one. Datastar morphs
-// a patch in synchronously, so one observer batch is one server frame; the
-// panes it touched are the ones to re-pin. The callback is a microtask, so a
-// scrollTop correction here lands before the frame paints.
-new MutationObserver(muts => {
-  wireAll();
-  const touched = new Set();
-  const removed = {}, added = {};
-  for (const m of muts) {
-    const el = m.target.nodeType === 1 ? m.target : m.target.parentElement;
-    const name = el?.closest?.(".pane")?.dataset.pane;
-    if (!name) continue;
-    touched.add(name);
-    if (!ANCHORS && m.type === "childList") {
-      rowIds(m.removedNodes, removed[name] ??= new Set());
-      rowIds(m.addedNodes, added[name] ??= new Set());
-    }
-  }
-  for (const name of touched) {
-    if (stick[name]) stickToBottom(name);
-    else if (removed[name]) holdLine(name, removed[name], added[name]);
-  }
-}).observe(document.body, {childList: true, subtree: true, characterData: true});
-
-addEventListener("resize", () => { cellCache = null; scheduleFit(); });
-document.fonts.ready.then(() => { cellCache = null; fit(); });
-
-document.addEventListener("copy", ev => {
-  const sel = getSelection(); if (!sel) return;
-  const text = sel.toString(); if (!text) return;
-  const trimmed = text.split("\n").map(l => l.replace(/[ \t]+$/,"")).join("\n");
-  if (trimmed === text) return;
-  ev.clipboardData?.setData("text/plain", trimmed);
-  ev.preventDefault();
-});
-addEventListener("paste", ev => {
-  if (mode !== "focus") return;
-  const text = ev.clipboardData?.getData("text");
-  if (!text) return;
-  ev.preventDefault();
-  send(selected, {t:"paste", s:text});
-});
+// Columns and panes arrive and leave as server patches: keep the selection
+// and the empty hint in step with what is on the page.
+new MutationObserver(wireAll).observe(document.getElementById("strip"), {childList: true, subtree: true});
 
 async function postPane(path, params) {
   const q = new URLSearchParams(params);
@@ -522,7 +223,7 @@ backdrop.addEventListener("click", e => {
 });
 
 document.addEventListener("keydown", ev => {
-  if (ev.isComposing || ev.keyCode === 229 || composing) return;
+  if (ev.isComposing || ev.keyCode === 229) return;
   const combo = comboKey(ev);
 
   if (actionsOwned) {
@@ -560,21 +261,9 @@ document.addEventListener("keydown", ev => {
     return;
   }
 
-  if (mode === "focus") {
-    const t = ev.target, tag = t && t.tagName;
-    if (t !== ta && (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (t && t.isContentEditable))) return;
-    if (ev.ctrlKey && !ev.altKey && !ev.metaKey && ev.key === "c") {
-      const sel = getSelection().toString();
-      if (sel) { navigator.clipboard.writeText(sel).catch(()=>{}); ev.preventDefault(); return; }
-    }
-    const frame = keyEvent(ev);
-    if (frame === null) return;
-    if (document.activeElement !== ta) ta.focus();
-    ev.preventDefault();
-    ta.value = "";
-    send(selected, frame);
-    return;
-  }
+  // In focus mode every other key belongs to the selected pane, which holds
+  // DOM focus and handles it itself.
+  if (mode === "focus") return;
 
   if (ev.key === "Enter" && !ev.metaKey && !ev.ctrlKey && !ev.altKey) {
     if (!selected) return;
