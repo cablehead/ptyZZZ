@@ -83,7 +83,12 @@ strip.addEventListener("mousedown", e => {
   if (e.target.closest(".follow")) return;
   const p = e.target.closest(".pane");
   if (!p) return;
-  setSelected(p.dataset.pane, {focus: true});
+  // Select and enter focus mode, but do not park focus yet: focusing the
+  // compose textarea on mousedown kills a drag selection before it starts.
+  // The click handlers park after mouseup, when a finished selection is
+  // visible to the guard in park().
+  setSelected(p.dataset.pane);
+  setMode("focus");
 });
 strip.addEventListener("click", e => {
   const btn = e.target.closest(".follow");
