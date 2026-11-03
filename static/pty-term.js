@@ -269,9 +269,14 @@ rocket("pty-term", {
     });
 
     // Mouse: the pane captures it only while the app has grabbed it (the
-    // cursor's data-mouse-grabbed), and never with Shift held, which keeps
-    // native text selection and scrollback. See PROTOCOL.md {t:mouse}.
-    const grabbed = () => box.querySelector(".cursor")?.dataset.mouseGrabbed === "true";
+    // cursor's data-mouse-grabbed) and this pane holds focus, and never with
+    // Shift held, which keeps native text selection and scrollback. See
+    // PROTOCOL.md {t:mouse}. An unfocused pane must not capture.
+    // preventDefault on pointerdown suppresses the mousedown and click the
+    // layout uses to focus a pane, so a grabbed app could not be clicked
+    // into focus.
+    const appGrabbed = () => box.querySelector(".cursor")?.dataset.mouseGrabbed === "true";
+    const grabbed = () => appGrabbed() && host.contains(document.activeElement);
     const mods = (ev) => (ev.shiftKey ? 1 : 0) | (ev.altKey ? 2 : 0) | (ev.ctrlKey ? 4 : 0) | (ev.metaKey ? 8 : 0);
     // The cell under the pointer, in visible-screen coordinates: the last
     // data-rows rows of the grid are the screen, the rest is scrollback.

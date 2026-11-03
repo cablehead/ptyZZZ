@@ -31,8 +31,9 @@ move may omit `button`. `mods` uses the same bitfield as `key`. Optional
 `x_pixel_offset` and `y_pixel_offset` fields locate the event within its cell.
 The emulator encodes the event using the application's active mouse protocol.
 Clients should only capture mouse input when the rendered cursor element has
-`data-mouse-grabbed="true"`; Shift should bypass capture for native text
-selection and scrollback.
+`data-mouse-grabbed="true"` and the pane itself holds focus. Shift should
+bypass capture for native text selection and scrollback. Capturing an
+unfocused pane swallows the click that would focus it.
 
 `focus` tells the emulator the viewer gained or lost focus. It reports
 `CSI I` / `CSI O` to the application only when the application enabled focus
